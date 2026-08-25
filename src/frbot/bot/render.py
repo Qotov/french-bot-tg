@@ -86,6 +86,25 @@ def error_card_back(card: Card) -> str:
     return "\n".join(lines)
 
 
+def stats_message(stats) -> str:
+    rate = "—" if stats.correct_rate_7d is None else f"{round(stats.correct_rate_7d * 100)}%"
+    lines = [
+        "📊 <b>Статистика</b>",
+        f"К повторению сегодня: {stats.due_today}",
+        f"Повторений за 7 дней: {stats.reviews_7d}",
+        f"Правильных (Good + Easy): {rate}",
+        f"Новых карточек за 7 дней: {stats.new_cards_7d}",
+    ]
+    if stats.top_error_types_30d:
+        lines.append("Частые ошибки за 30 дней:")
+        lines.extend(
+            f"  • {esc(err_type)} — {count}" for err_type, count in stats.top_error_types_30d
+        )
+    else:
+        lines.append("Ошибок за 30 дней: нет данных")
+    return "\n".join(lines)
+
+
 def card_front(card: Card) -> str:
     if card.kind == CardKind.vocab.value:
         enr = Enrichment.model_validate(card.enrichment)
