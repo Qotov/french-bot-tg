@@ -1,0 +1,52 @@
+[project]
+name = "frbot"
+version = "0.1.0"
+description = "Personal Telegram bot for French learning (B1 to B2): capture, enrich, review, write, drill"
+requires-python = ">=3.13"
+dependencies = [
+    "aiogram>=3.30",
+    "aiosqlite>=0.22.1",
+    "alembic>=1.19.1",
+    "anthropic>=1.0.0",
+    "apscheduler>=3,<4",
+    "fsrs>=6.3.1",
+    "pydantic-settings>=2.15.0",
+    "sqlalchemy[asyncio]>=2.0.52",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.16.4",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/frbot"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # bugbear
+    "SIM", # simplify
+    "RUF", # ruff-specific
+    "ASYNC", # async pitfalls
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]

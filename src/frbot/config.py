@@ -1,0 +1,49 @@
+"""Application configuration via pydantic-settings.
+
+Values come from the environment / .env file. A few of them (reminder time,
+writing time, limits) can be overridden at runtime through the app_settings
+table; see db/repo.py.
+"""
+
+import re
+
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        protected_namespaces=(),
+    )
+
+    bot_token: str
+    anthropic_api_key: str
+    allowed_user_id: int
+    tz: str = "Europe/Paris"
+    db_url: str = "sqlite+aiosqlite:///data/frbot.db"
+    model_fast: str = "claude-haiku-4-5-20251001"
+    model_smart: str = "claude-sonnet-5"
+    daily_new_limit: int = 15
+    session_max: int = 30
+    reminder_time: str = "08:30"
+    writing_time: str = "19:00"
+    desired_retention: float = 0.9
+
+    @field_validator("reminder_time", "writing_time")
+    @classmethod
+    def _valid_time(cls, v: str) -> str:
+        if not TIME_RE.match(v):
+            raise ValueError(f"expected HH:MM, got {v!r}")
+        return v
+
+    @field_validator("desired_retention")
+    @classmethod
+    def _valid_retention(cls, v: float) -> float:
+        if not 0.5 <= v <= 0.995:
+            raise ValueError("desired_retention must be between 0.5 and 0.995")
+        return v
