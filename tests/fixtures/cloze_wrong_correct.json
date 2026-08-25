@@ -1,0 +1,34 @@
+{
+  "items": [
+    {
+      "sentence_with_gap": "Je ___ allé au marché hier.",
+      "options": ["suis", "ai", "es"],
+      "correct": "étais",
+      "explanation_ru": "Глаголы движения спрягаются с être."
+    },
+    {
+      "sentence_with_gap": "Elle ___ mangé une pomme.",
+      "options": ["a", "est", "as"],
+      "correct": "a",
+      "explanation_ru": "manger спрягается с avoir."
+    },
+    {
+      "sentence_with_gap": "Nous ___ partis très tôt.",
+      "options": ["sommes", "avons", "êtes"],
+      "correct": "sommes",
+      "explanation_ru": "partir — глагол движения, с être."
+    },
+    {
+      "sentence_with_gap": "Ils ___ vu un bon film.",
+      "options": ["ont", "sont", "avez"],
+      "correct": "ont",
+      "explanation_ru": "voir спрягается с avoir."
+    },
+    {
+      "sentence_with_gap": "Tu ___ restée chez toi ?",
+      "options": ["es", "as", "est"],
+      "correct": "es",
+      "explanation_ru": "rester спрягается с être."
+    }
+  ]
+}

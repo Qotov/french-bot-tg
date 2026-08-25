@@ -1,0 +1,17 @@
+{
+  "lemma": "au fur et à mesure",
+  "pos": "expression",
+  "gender": null,
+  "ipa": "o fyʁ e a məzyʁ",
+  "definition_fr": "progressivement, en même temps que quelque chose avance",
+  "translation_ru": "по мере того как; постепенно",
+  "translation_en": "as one goes along; progressively",
+  "examples": [
+    {"fr": "Je range les documents au fur et à mesure.", "ru": "Я раскладываю документы по мере поступления."},
+    {"fr": "Au fur et à mesure que je lis, je comprends mieux.", "ru": "По мере чтения я понимаю всё лучше."},
+    {"fr": "Elle apprend au fur et à mesure des rencontres.", "ru": "Она учится от встречи к встрече."}
+  ],
+  "collocations": ["au fur et à mesure que", "au fur et à mesure de", "avancer au fur et à mesure"],
+  "register": "neutre",
+  "notes": "Устойчивое выражение, не переводится дословно."
+}

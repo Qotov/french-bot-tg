@@ -1,9 +1,13 @@
-"""Fake aiogram bot: a session that records outgoing API calls instead of
-performing HTTP requests, plus builders for incoming Telegram objects.
+"""Fakes for tests: an aiogram session that records outgoing API calls instead
+of performing HTTP requests, builders for incoming Telegram objects, a FakeLLM,
+and a stub anthropic client fed with canned responses.
 """
 
+import json
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from aiogram import Bot
@@ -16,6 +20,16 @@ from aiogram.types import CallbackQuery, Chat, Message, Update, User
 
 ALLOWED_USER_ID = 111_111
 OTHER_USER_ID = 999_999
+
+FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
+
+def load_fixture(name: str) -> str:
+    return (FIXTURES_DIR / name).read_text(encoding="utf-8")
+
+
+def load_fixture_json(name: str) -> Any:
+    return json.loads(load_fixture(name))
 
 
 class RecordingSession(BaseSession):
@@ -123,3 +137,74 @@ def make_callback_query(
 
 def make_update_with_message(text: str, user_id: int = ALLOWED_USER_ID) -> Update:
     return Update(update_id=1, message=make_message(text, user_id=user_id))
+
+
+# -- LLM fakes -----------------------------------------------------------------
+
+
+class FakeLLM:
+    """Duck-typed LLMClient: returns queued results or raises queued exceptions."""
+
+    def __init__(
+        self,
+        enrich_results: list[Any] | None = None,
+        correct_results: list[Any] | None = None,
+        cloze_results: list[Any] | None = None,
+    ) -> None:
+        self.enrich_results = enrich_results or []
+        self.correct_results = correct_results or []
+        self.cloze_results = cloze_results or []
+        self.enrich_calls: list[str] = []
+        self.correct_calls: list[tuple[str, str]] = []
+        self.cloze_calls: list[tuple[str, list[str]]] = []
+
+    @staticmethod
+    def _next(queue: list[Any]) -> Any:
+        result = queue[0] if len(queue) == 1 else queue.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    async def enrich(self, text: str, *, model: str) -> Any:
+        self.enrich_calls.append(text)
+        return self._next(self.enrich_results)
+
+    async def correct(self, prompt: str, answer: str, *, model: str) -> Any:
+        self.correct_calls.append((prompt, answer))
+        return self._next(self.correct_results)
+
+    async def cloze(self, topic: str, lemmas: Any, *, model: str) -> Any:
+        self.cloze_calls.append((topic, list(lemmas)))
+        return self._next(self.cloze_results)
+
+
+def text_response(text: str, input_tokens: int = 100, output_tokens: int = 200) -> Any:
+    """Shape-compatible stand-in for an anthropic Message response."""
+    return SimpleNamespace(
+        content=[SimpleNamespace(type="text", text=text)],
+        usage=SimpleNamespace(input_tokens=input_tokens, output_tokens=output_tokens),
+    )
+
+
+class StubAnthropicMessages:
+    def __init__(self, outcomes: list[Any]) -> None:
+        self.outcomes = list(outcomes)
+        self.calls: list[dict[str, Any]] = []
+
+    async def create(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+class StubAnthropicClient:
+    """Stands in for AsyncAnthropic; outcomes are responses or exceptions."""
+
+    def __init__(self, outcomes: list[Any]) -> None:
+        self.messages = StubAnthropicMessages(outcomes)
+
+    @property
+    def calls(self) -> list[dict[str, Any]]:
+        return self.messages.calls
