@@ -1,0 +1,13 @@
+# Environments
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Data
+data/
+
+# OS
+.DS_Store
