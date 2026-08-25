@@ -1,0 +1,18 @@
+{
+  "corrected_text": "Je suis allé au marché hier. J'ai acheté des pommes.",
+  "errors": [
+    {
+      "original": "depuis hier",
+      "corrected": "hier",
+      "type": "preposition",
+      "explanation_ru": "«depuis» — для действия, которое продолжается; для законченного действия в прошлом — просто «hier»."
+    },
+    {
+      "original": "j'ai acheté les pommes",
+      "corrected": "j'ai acheté des pommes",
+      "type": "other",
+      "explanation_ru": "Неопределённое количество — артикль «des», а не «les»."
+    }
+  ],
+  "comment_ru": "Хорошая работа с passé composé, продолжай в том же духе."
+}

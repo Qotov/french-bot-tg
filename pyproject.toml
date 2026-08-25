@@ -45,6 +45,11 @@ select = [
     "RUF", # ruff-specific
     "ASYNC", # async pitfalls
 ]
+ignore = [
+    "RUF001", # ambiguous unicode in strings — the bot speaks Russian
+    "RUF002", # same, in docstrings
+    "RUF003", # same, in comments
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

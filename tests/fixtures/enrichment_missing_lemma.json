@@ -1,0 +1,16 @@
+{
+  "pos": "noun",
+  "gender": "f",
+  "ipa": "mɛzɔ̃",
+  "definition_fr": "bâtiment où on habite",
+  "translation_ru": "дом",
+  "translation_en": "house",
+  "examples": [
+    {"fr": "Ma maison est petite.", "ru": "Мой дом маленький."},
+    {"fr": "Il rentre à la maison.", "ru": "Он возвращается домой."},
+    {"fr": "La maison est vieille.", "ru": "Дом старый."}
+  ],
+  "collocations": ["à la maison"],
+  "register": "neutre",
+  "notes": ""
+}
