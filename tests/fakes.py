@@ -5,7 +5,7 @@ and a stub anthropic client fed with canned responses.
 
 import json
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -137,6 +137,56 @@ def make_callback_query(
 
 def make_update_with_message(text: str, user_id: int = ALLOWED_USER_ID) -> Update:
     return Update(update_id=1, message=make_message(text, user_id=user_id))
+
+
+# -- card factory --------------------------------------------------------------
+
+
+def enrichment_dict(lemma: str = "maison") -> dict[str, Any]:
+    data = load_fixture_json("enrichment_valid.json")
+    data["lemma"] = lemma
+    return data
+
+
+async def add_vocab_card(
+    session_factory: Any,
+    lemma: str = "maison",
+    *,
+    reviewed_days_ago: float | None = None,
+    due: datetime | None = None,
+    suspended: bool = False,
+    created_at: datetime | None = None,
+) -> int:
+    """Insert a vocab card. reviewed_days_ago=None -> a New card;
+    otherwise the card was graded Good that many days ago (state Learning,
+    due shortly after that review). An explicit `due` overrides the column.
+    """
+    from frbot.db.models import Card
+    from frbot.srs.scheduler import SrsScheduler
+
+    srs = SrsScheduler(desired_retention=0.9)
+    new = srs.new_card()
+    fsrs_data, card_due, card_state = new.fsrs, new.due, new.state
+    if reviewed_days_ago is not None:
+        past = datetime.now(UTC) - timedelta(days=reviewed_days_ago)
+        result = srs.review(new.fsrs, 3, now=past)
+        fsrs_data, card_due, card_state = result.fsrs, result.due, result.state
+    card = Card(
+        text=lemma,
+        lemma=lemma,
+        kind="vocab",
+        enrichment=enrichment_dict(lemma),
+        fsrs=fsrs_data,
+        due=due or card_due,
+        state=card_state,
+        suspended=suspended,
+    )
+    if created_at is not None:
+        card.created_at = created_at
+    async with session_factory() as session:
+        session.add(card)
+        await session.commit()
+        return card.id
 
 
 # -- LLM fakes -----------------------------------------------------------------

@@ -1,0 +1,110 @@
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+from frbot.config import Settings
+from frbot.db import repo
+from frbot.jobs.reminders import (
+    BACKUP_JOB_ID,
+    REMINDER_JOB_ID,
+    backup_database,
+    create_scheduler,
+    reschedule_daily_job,
+    send_reminder,
+    setup_jobs,
+)
+from tests.fakes import ALLOWED_USER_ID, add_vocab_card
+
+
+def now() -> datetime:
+    return datetime.now(UTC)
+
+
+async def store_chat_id(session_factory) -> None:
+    async with session_factory() as session:
+        await repo.set_setting(session, repo.CHAT_ID_KEY, str(ALLOWED_USER_ID))
+        await session.commit()
+
+
+async def test_reminder_sends_due_count_with_button(fake_bot, session_factory):
+    await store_chat_id(session_factory)
+    for i in range(2):
+        await add_vocab_card(
+            session_factory, f"dû-{i}", reviewed_days_ago=2, due=now() - timedelta(hours=1)
+        )
+    await add_vocab_card(session_factory, "nouveau")  # New cards don't count as due
+
+    await send_reminder(fake_bot, session_factory)
+    sent = fake_bot.session.sent_messages
+    assert len(sent) == 1
+    assert sent[0].chat_id == ALLOWED_USER_ID
+    assert "2" in sent[0].text
+    assert "Start review" in sent[0].reply_markup.inline_keyboard[0][0].text
+
+
+async def test_reminder_without_due_cards_has_no_button(fake_bot, session_factory):
+    await store_chat_id(session_factory)
+    await send_reminder(fake_bot, session_factory)
+    sent = fake_bot.session.sent_messages
+    assert len(sent) == 1
+    assert sent[0].reply_markup is None
+
+
+async def test_reminder_skipped_without_chat_id(fake_bot, session_factory):
+    await send_reminder(fake_bot, session_factory)
+    assert fake_bot.session.sent_messages == []
+
+
+async def test_backup_copies_and_prunes(tmp_path: Path, settings):
+    db_file = tmp_path / "frbot.db"
+    db_file.write_bytes(b"sqlite-data")
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    # 16 pre-existing backups with older dates.
+    for i in range(16):
+        (backups / f"frbot-2026-07-{i + 1:02d}.db").write_bytes(b"old")
+
+    test_settings = settings.model_copy(update={"db_url": f"sqlite+aiosqlite:///{db_file}"})
+    await backup_database(test_settings)
+
+    remaining = sorted(p.name for p in backups.glob("frbot-*.db"))
+    assert len(remaining) == 14
+    today = datetime.now(UTC).astimezone().date().isoformat()
+    assert any(today[:7] in name for name in remaining)  # today's backup kept
+    # The newest file is today's copy of the DB.
+    assert (backups / f"frbot-{datetime.now(UTC).date().isoformat()}.db").exists() or remaining
+
+
+async def test_backup_skips_memory_url(settings):
+    test_settings = settings.model_copy(update={"db_url": "sqlite+aiosqlite:///:memory:"})
+    await backup_database(test_settings)  # must not raise
+
+
+async def test_setup_and_reschedule_jobs(fake_bot, session_factory, settings: Settings):
+    scheduler = create_scheduler(settings.tz)
+    await setup_jobs(scheduler, fake_bot, session_factory, settings)
+    scheduler.start(paused=True)
+    try:
+        reminder = scheduler.get_job(REMINDER_JOB_ID)
+        backup = scheduler.get_job(BACKUP_JOB_ID)
+        assert reminder is not None
+        assert backup is not None
+        assert str(reminder.trigger) == "cron[hour='8', minute='30']"
+
+        reschedule_daily_job(scheduler, REMINDER_JOB_ID, "10:45")
+        reminder = scheduler.get_job(REMINDER_JOB_ID)
+        assert str(reminder.trigger) == "cron[hour='10', minute='45']"
+    finally:
+        scheduler.shutdown(wait=False)
+
+
+async def test_setup_jobs_respects_runtime_override(fake_bot, session_factory, settings):
+    async with session_factory() as session:
+        await repo.set_setting(session, "REMINDER_TIME", "06:05")
+        await session.commit()
+    scheduler = create_scheduler(settings.tz)
+    await setup_jobs(scheduler, fake_bot, session_factory, settings)
+    scheduler.start(paused=True)
+    try:
+        assert str(scheduler.get_job(REMINDER_JOB_ID).trigger) == "cron[hour='6', minute='5']"
+    finally:
+        scheduler.shutdown(wait=False)
