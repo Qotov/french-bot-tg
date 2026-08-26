@@ -136,3 +136,56 @@ async def test_whitelist_blocks_everything_via_dispatcher(dp, fake_bot, llm):
         await dp.feed_update(fake_bot, message_update(text, update_id=i + 1, user_id=OTHER_USER_ID))
     assert fake_bot.session.sent_messages == []
     assert llm.enrich_calls == []
+
+
+async def test_topic_flow_via_dispatcher(dp, fake_bot, session_factory, llm):
+    from frbot.llm.schemas import TopicWordList
+
+    llm.topic_results.append(
+        TopicWordList.model_validate(
+            {"words": [{"lemma": "commander", "translation_ru": "заказывать"}]}
+        )
+    )
+    await dp.feed_update(fake_bot, message_update("/topic ресторан 5"))
+    assert llm.topic_calls
+    assert any("ресторан" in (m.text or "") for m in fake_bot.session.sent_messages)
+
+    await dp.feed_update(fake_bot, callback_update("topic:save", update_id=2))
+    async with session_factory() as session:
+        card = (await session.execute(select(Card).where(Card.lemma != ""))).scalars().first()
+    assert card is not None
+
+
+async def test_voice_routes_by_state(dp, fake_bot, session_factory, llm):
+    """Idle voice -> capture; /talk voice -> conversation turn."""
+    from aiogram.types import Update
+
+    from frbot.llm.schemas import TalkTurn, VoiceWords
+    from tests.fakes import make_voice_message
+
+    llm.voice_words_results.append(VoiceWords(words=["boulangerie"]))
+    voice_update = Update(update_id=10, message=make_voice_message())
+    await dp.feed_update(fake_bot, voice_update)
+    assert llm.voice_words_calls == ["audio/ogg"]  # went to capture
+
+    llm.talk_results.extend(
+        [
+            TalkTurn(reply_fr="Salut ! Ça va ?"),
+            TalkTurn(transcript="ça va bien", reply_fr="Super !"),
+        ]
+    )
+    await dp.feed_update(fake_bot, message_update("/talk", update_id=11))
+    await dp.feed_update(fake_bot, Update(update_id=12, message=make_voice_message(message_id=3)))
+    assert llm.talk_calls[-1]["kind"] == "turn"
+    assert llm.talk_calls[-1]["audio"] is True
+    assert len(llm.voice_words_calls) == 1  # capture did NOT fire this time
+
+
+async def test_talk_text_not_captured(dp, fake_bot, session_factory, llm):
+    from frbot.llm.schemas import TalkTurn
+
+    llm.talk_results.extend([TalkTurn(reply_fr="Salut !"), TalkTurn(reply_fr="Génial !")])
+    await dp.feed_update(fake_bot, message_update("/talk"))
+    await dp.feed_update(fake_bot, message_update("je mange une pomme", update_id=2))
+    assert llm.talk_calls[-1]["text"] == "je mange une pomme"
+    assert llm.enrich_calls == []  # capture stayed out of the conversation

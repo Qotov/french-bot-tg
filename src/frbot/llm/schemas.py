@@ -100,6 +100,84 @@ class WritingCorrection(BaseModel):
     comment_ru: str = ""
 
 
+# -------------------------------------------------------------- topic packs
+
+TOPIC_WORDS_MAX = 20
+
+
+class TopicWord(BaseModel):
+    lemma: str
+    translation_ru: str
+
+    @field_validator("lemma")
+    @classmethod
+    def _lemma_not_empty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("lemma must not be empty")
+        return v
+
+
+class TopicWordList(BaseModel):
+    words: list[TopicWord]
+
+    @field_validator("words")
+    @classmethod
+    def _non_empty_and_unique(cls, v: list[TopicWord]) -> list[TopicWord]:
+        seen: set[str] = set()
+        unique = []
+        for word in v:
+            key = word.lemma.lower()
+            if key not in seen:
+                seen.add(key)
+                unique.append(word)
+        if not unique:
+            raise ValueError("expected at least one word")
+        return unique[:TOPIC_WORDS_MAX]
+
+
+# -------------------------------------------------------------------- voice
+
+VOICE_WORDS_MAX = 5
+
+
+class VoiceWords(BaseModel):
+    """French words/phrases the speaker asked to save, extracted from audio."""
+
+    words: list[str] = []
+
+    @field_validator("words")
+    @classmethod
+    def _clean(cls, v: list[str]) -> list[str]:
+        cleaned = [w.strip() for w in v if w and w.strip()]
+        return cleaned[:VOICE_WORDS_MAX]
+
+
+class Transcript(BaseModel):
+    transcript: str = ""
+
+
+# --------------------------------------------------------------------- talk
+
+
+class TalkTurn(BaseModel):
+    """One tutor turn: optional transcript of the learner's audio, corrections
+    of the learner's latest message, and the conversational reply."""
+
+    transcript: str = ""
+    corrected_fr: str = ""  # full corrected version of the learner's message
+    errors: list[WritingError] = []
+    reply_fr: str
+
+    @field_validator("reply_fr")
+    @classmethod
+    def _reply_not_empty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("reply_fr must not be empty")
+        return v
+
+
 # -------------------------------------------------------------------- cloze
 
 GAP = "___"

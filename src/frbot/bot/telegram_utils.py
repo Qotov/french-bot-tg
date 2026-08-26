@@ -42,3 +42,25 @@ async def safe_answer(query: CallbackQuery, text: str | None = None, **kwargs: o
         await query.answer(text, **kwargs)
     except TelegramBadRequest as exc:
         logger.info("callback answer failed: %s", exc)
+
+
+VOICE_MAX_DURATION = 90  # seconds
+VOICE_TOO_LONG_TEXT = f"Голосовое длиннее {VOICE_MAX_DURATION} секунд — запиши короче, пожалуйста."
+
+
+async def download_voice(message: Message) -> tuple[bytes, str] | None:
+    """Download a voice note; returns (bytes, mime_type) or None on failure."""
+    voice = message.voice
+    if voice is None:
+        return None
+    try:
+        buffer = await message.bot.download(voice)
+    except Exception:
+        logger.exception("voice download failed")
+        return None
+    if buffer is None:
+        return None
+    data = buffer.read()
+    if not data:
+        return None
+    return data, voice.mime_type or "audio/ogg"

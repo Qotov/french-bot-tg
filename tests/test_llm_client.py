@@ -128,3 +128,65 @@ async def test_empty_response_text_fails_validation_not_crash():
     result = await client.enrich("maison", model="m")
     assert result.lemma == "au fur et à mesure"
     assert len(stub.calls) == 2
+
+
+async def test_extract_voice_words_sends_audio_part():
+    from google.genai import types as genai_types
+
+    client, stub = make_client([text_response('{"words": ["boulangerie"]}')])
+    result = await client.extract_voice_words(b"audio-bytes", "audio/ogg", model="m")
+    assert result.words == ["boulangerie"]
+    contents = stub.calls[0]["contents"]
+    assert isinstance(contents, list)
+    part = contents[0]
+    assert isinstance(part, genai_types.Part)
+    assert part.inline_data.mime_type == "audio/ogg"
+    assert part.inline_data.data == b"audio-bytes"
+
+
+async def test_talk_turn_requires_exactly_one_input():
+    client, _ = make_client([])
+    with pytest.raises(ValueError):
+        await client.talk_turn("history", model="m")
+    with pytest.raises(ValueError):
+        await client.talk_turn("history", model="m", text="salut", audio=(b"x", "audio/ogg"))
+
+
+async def test_talk_turn_text_and_audio_shapes():
+    turn_json = (
+        '{"transcript": "", "corrected_fr": "", "errors": [], "reply_fr": "Super ! Et toi ?"}'
+    )
+    client, stub = make_client([text_response(turn_json), text_response(turn_json)])
+    result = await client.talk_turn("Tuteur: Salut", model="m", text="Ça va bien")
+    assert result.reply_fr == "Super ! Et toi ?"
+    assert "Ça va bien" in stub.calls[0]["contents"]
+    assert "Tuteur: Salut" in stub.calls[0]["contents"]
+
+    await client.talk_turn("Tuteur: Salut", model="m", audio=(b"x", "audio/ogg"))
+    assert isinstance(stub.calls[1]["contents"], list)
+
+
+async def test_multimodal_validation_retry_appends_text_note():
+    client, stub = make_client(
+        [
+            text_response("pas du json"),
+            text_response('{"transcript": "salut"}'),
+        ]
+    )
+    result = await client.transcribe(b"audio", "audio/ogg", model="m")
+    assert result.transcript == "salut"
+    retry_contents = stub.calls[1]["contents"]
+    assert isinstance(retry_contents, list)
+    assert "previous response was invalid" in retry_contents[-1]
+
+
+async def test_topic_words_prompt_contains_topic_and_known():
+    client, stub = make_client(
+        [text_response('{"words": [{"lemma": "commander", "translation_ru": "заказывать"}]}')]
+    )
+    result = await client.topic_words("ресторан", 10, ["maison"], model="m")
+    assert result.words[0].lemma == "commander"
+    contents = stub.calls[0]["contents"]
+    assert "ресторан" in contents
+    assert "exactly 10" in contents
+    assert "maison" in contents

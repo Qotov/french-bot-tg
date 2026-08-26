@@ -20,6 +20,11 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message
 
 from frbot.bot import render
+from frbot.bot.telegram_utils import (
+    VOICE_MAX_DURATION,
+    VOICE_TOO_LONG_TEXT,
+    download_voice,
+)
 from frbot.config import Settings
 from frbot.db import repo
 from frbot.db.models import CardKind
@@ -31,6 +36,7 @@ from frbot.timeutil import day_end_utc, day_start_utc
 logger = logging.getLogger(__name__)
 
 FAIL_TEXT = "⚠️ Не получилось проверить текст. Пришли его ещё раз через минуту."
+VOICE_FAIL_TEXT = "⚠️ Не получилось разобрать голосовое. Скажи ещё раз или напиши текстом."
 ANSWER_MAX_LEN = 1500
 
 WRITING_SITUATIONS = [
@@ -109,6 +115,50 @@ async def handle_answer(
     answer_text = (message.text or "").strip()
     if not answer_text:
         return
+    await process_answer(message, answer_text, state, session_factory, llm, srs, settings)
+
+
+async def handle_voice_answer(
+    message: Message,
+    state: FSMContext,
+    session_factory: SessionFactory,
+    llm: LLMClient,
+    srs: SrsScheduler,
+    settings: Settings,
+) -> None:
+    """A spoken answer to the writing prompt: transcribe, show, then correct."""
+    if message.voice.duration > VOICE_MAX_DURATION:
+        await message.answer(VOICE_TOO_LONG_TEXT)
+        return
+    await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+    audio = await download_voice(message)
+    if audio is None:
+        await message.answer(VOICE_FAIL_TEXT)
+        return
+    data, mime_type = audio
+    try:
+        transcript = await llm.transcribe(data, mime_type, model=settings.model_fast)
+    except LLMError:
+        logger.exception("voice answer transcription failed")
+        await message.answer(VOICE_FAIL_TEXT)
+        return
+    answer_text = transcript.transcript.strip()
+    if not answer_text:
+        await message.answer("🤔 Не расслышал ответа — скажи ещё раз или напиши текстом.")
+        return
+    await message.answer(f"🎙 <i>{render.esc(answer_text)}</i>")
+    await process_answer(message, answer_text, state, session_factory, llm, srs, settings)
+
+
+async def process_answer(
+    message: Message,
+    answer_text: str,
+    state: FSMContext,
+    session_factory: SessionFactory,
+    llm: LLMClient,
+    srs: SrsScheduler,
+    settings: Settings,
+) -> None:
     if len(answer_text) > ANSWER_MAX_LEN:
         await message.answer(
             f"Слишком длинно — нужно всего 2–3 предложения (до {ANSWER_MAX_LEN} символов). "
@@ -168,4 +218,5 @@ def create_router() -> Router:
     router.message.register(
         handle_answer, WriteStates.awaiting_answer, F.text, ~F.text.startswith("/")
     )
+    router.message.register(handle_voice_answer, WriteStates.awaiting_answer, F.voice)
     return router

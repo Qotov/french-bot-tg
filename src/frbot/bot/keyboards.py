@@ -58,6 +58,19 @@ def drill_options_kb(item_index: int, options: list[str]) -> InlineKeyboardMarku
     return builder.as_markup()
 
 
+def topic_select_kb(lemmas: list[str], selected: set[int]) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for index, lemma in enumerate(lemmas):
+        mark = "✅" if index in selected else "☐"
+        builder.button(text=f"{mark} {lemma}", callback_data=f"topic:toggle:{index}")
+    builder.adjust(2)
+    builder.row(
+        InlineKeyboardButton(text=f"➕ Добавить ({len(selected)})", callback_data="topic:save"),
+        InlineKeyboardButton(text="✖️ Отмена", callback_data="topic:cancel"),
+    )
+    return builder.as_markup()
+
+
 def settings_kb(values: dict[str, str]) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for key, value in values.items():
