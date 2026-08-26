@@ -11,8 +11,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from frbot.config import TIME_RE, Settings
-from frbot.db.models import AppSetting, Card, CardState, Review
-from frbot.srs.scheduler import ReviewResult
+from frbot.db.models import AppSetting, Card, CardKind, CardState, Review, Writing
+from frbot.srs.scheduler import ReviewResult, SrsScheduler
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +45,13 @@ async def get_card(session: AsyncSession, card_id: int) -> Card | None:
 
 
 async def find_card_by_lemma(session: AsyncSession, lemma: str) -> Card | None:
+    """Vocab-card dedupe lookup (error cards keep synthetic lemmas and are skipped)."""
     stmt = (
         select(Card)
-        .where(func.lower(Card.lemma) == lemma.strip().lower())
+        .where(
+            Card.kind == CardKind.vocab.value,
+            func.lower(Card.lemma) == lemma.strip().lower(),
+        )
         .order_by(Card.id)
         .limit(1)
     )
@@ -131,6 +135,112 @@ async def apply_review(
             elapsed_days=result.elapsed_days,
         )
     )
+
+
+# -- writing ------------------------------------------------------------------
+
+
+async def pick_writing_words(
+    session: AsyncSession, *, due_until: datetime, limit: int = 3
+) -> list[str]:
+    """Prefer vocab cards due today; fill up with the most recent captures."""
+    due_stmt = (
+        select(Card.lemma)
+        .where(
+            Card.kind == CardKind.vocab.value,
+            Card.suspended.is_(False),
+            Card.due <= due_until,
+        )
+        .order_by(Card.due)
+        .limit(limit)
+    )
+    words = list((await session.execute(due_stmt)).scalars().all())
+    if len(words) < limit:
+        recent_stmt = (
+            select(Card.lemma)
+            .where(
+                Card.kind == CardKind.vocab.value,
+                Card.suspended.is_(False),
+                Card.lemma.not_in(words) if words else Card.lemma.is_not(None),
+            )
+            .order_by(Card.id.desc())
+            .limit(limit - len(words))
+        )
+        words.extend((await session.execute(recent_stmt)).scalars().all())
+    return words
+
+
+async def create_writing(session: AsyncSession, prompt: str) -> Writing:
+    writing = Writing(prompt=prompt)
+    session.add(writing)
+    await session.flush()
+    return writing
+
+
+async def get_writing(session: AsyncSession, writing_id: int) -> Writing | None:
+    return await session.get(Writing, writing_id)
+
+
+# -- error cards --------------------------------------------------------------
+
+ERROR_CARDS_DAILY_CAP = 5
+
+
+async def count_error_cards_created_since(session: AsyncSession, *, since: datetime) -> int:
+    stmt = select(func.count(Card.id)).where(
+        Card.kind == CardKind.error.value, Card.created_at >= since
+    )
+    return (await session.execute(stmt)).scalar_one()
+
+
+async def find_error_card(
+    session: AsyncSession, *, kind: str, err_type: str, corrected: str
+) -> Card | None:
+    """Dedupe on type + corrected span."""
+    stmt = (
+        select(Card)
+        .where(
+            Card.kind == kind,
+            func.lower(Card.lemma) == f"{err_type}:{corrected.strip().lower()}",
+        )
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def create_error_card(
+    session: AsyncSession,
+    srs: SrsScheduler,
+    *,
+    kind: str,
+    sentence: str,
+    original: str,
+    corrected: str,
+    err_type: str,
+    explanation_ru: str,
+) -> Card | None:
+    """Create an error/drill_error card unless an equal one exists. No cap check here."""
+    existing = await find_error_card(session, kind=kind, err_type=err_type, corrected=corrected)
+    if existing is not None:
+        return None
+    new = srs.new_card()
+    card = Card(
+        text=sentence,
+        lemma=f"{err_type}:{corrected.strip().lower()}",
+        kind=kind,
+        error_meta={
+            "type": err_type,
+            "original": original,
+            "corrected": corrected,
+            "explanation_ru": explanation_ru,
+        },
+        fsrs=new.fsrs,
+        due=new.due,
+        state=new.state,
+    )
+    session.add(card)
+    await session.flush()
+    return card
 
 
 # -- stats --------------------------------------------------------------------

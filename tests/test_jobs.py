@@ -1,15 +1,20 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+
+from aiogram.fsm.storage.memory import MemoryStorage
 
 from frbot.config import Settings
 from frbot.db import repo
 from frbot.jobs.reminders import (
     BACKUP_JOB_ID,
     REMINDER_JOB_ID,
+    WRITING_JOB_ID,
     backup_database,
     create_scheduler,
     reschedule_daily_job,
     send_reminder,
+    send_writing_prompt,
     setup_jobs,
 )
 from tests.fakes import ALLOWED_USER_ID, add_vocab_card
@@ -17,6 +22,10 @@ from tests.fakes import ALLOWED_USER_ID, add_vocab_card
 
 def now() -> datetime:
     return datetime.now(UTC)
+
+
+def fake_dispatcher() -> SimpleNamespace:
+    return SimpleNamespace(storage=MemoryStorage())
 
 
 async def store_chat_id(session_factory) -> None:
@@ -81,14 +90,17 @@ async def test_backup_skips_memory_url(settings):
 
 async def test_setup_and_reschedule_jobs(fake_bot, session_factory, settings: Settings):
     scheduler = create_scheduler(settings.tz)
-    await setup_jobs(scheduler, fake_bot, session_factory, settings)
+    await setup_jobs(scheduler, fake_bot, fake_dispatcher(), session_factory, settings)
     scheduler.start(paused=True)
     try:
         reminder = scheduler.get_job(REMINDER_JOB_ID)
+        writing = scheduler.get_job(WRITING_JOB_ID)
         backup = scheduler.get_job(BACKUP_JOB_ID)
         assert reminder is not None
+        assert writing is not None
         assert backup is not None
         assert str(reminder.trigger) == "cron[hour='8', minute='30']"
+        assert str(writing.trigger) == "cron[hour='19', minute='0']"
 
         reschedule_daily_job(scheduler, REMINDER_JOB_ID, "10:45")
         reminder = scheduler.get_job(REMINDER_JOB_ID)
@@ -102,9 +114,35 @@ async def test_setup_jobs_respects_runtime_override(fake_bot, session_factory, s
         await repo.set_setting(session, "REMINDER_TIME", "06:05")
         await session.commit()
     scheduler = create_scheduler(settings.tz)
-    await setup_jobs(scheduler, fake_bot, session_factory, settings)
+    await setup_jobs(scheduler, fake_bot, fake_dispatcher(), session_factory, settings)
     scheduler.start(paused=True)
     try:
         assert str(scheduler.get_job(REMINDER_JOB_ID).trigger) == "cron[hour='6', minute='5']"
     finally:
         scheduler.shutdown(wait=False)
+
+
+async def test_writing_prompt_job_sends_and_sets_state(fake_bot, session_factory, settings):
+    from frbot.bot.handlers.write import WriteStates
+
+    await store_chat_id(session_factory)
+    dispatcher = fake_dispatcher()
+    await send_writing_prompt(fake_bot, dispatcher, session_factory, settings)
+
+    sent = fake_bot.session.sent_messages
+    assert len(sent) == 1
+    assert "Задание" in sent[0].text
+
+    from aiogram.fsm.context import FSMContext
+    from aiogram.fsm.storage.base import StorageKey
+
+    state = FSMContext(
+        storage=dispatcher.storage,
+        key=StorageKey(bot_id=fake_bot.id, chat_id=ALLOWED_USER_ID, user_id=ALLOWED_USER_ID),
+    )
+    assert await state.get_state() == WriteStates.awaiting_answer.state
+
+
+async def test_writing_prompt_job_skipped_without_chat_id(fake_bot, session_factory, settings):
+    await send_writing_prompt(fake_bot, fake_dispatcher(), session_factory, settings)
+    assert fake_bot.session.sent_messages == []
