@@ -86,6 +86,28 @@ def error_card_back(card: Card) -> str:
     return "\n".join(lines)
 
 
+def correction_message(correction, created_cards: int) -> str:
+    """Corrected text, numbered error list with RU explanations, comment."""
+    lines = []
+    if correction.errors:
+        lines.append("📝 <b>Исправлено:</b>")
+        lines.append(f"<i>{esc(correction.corrected_text)}</i>")
+        lines.append("")
+        lines.append("Ошибки:")
+        for i, error in enumerate(correction.errors, start=1):
+            lines.append(f"{i}. ❌ {esc(error.original)} → ✅ <b>{esc(error.corrected)}</b>")
+            lines.append(f"   💡 {esc(error.explanation_ru)}")
+    else:
+        lines.append("🎉 Отлично, ошибок нет!")
+        lines.append(f"<i>{esc(correction.corrected_text)}</i>")
+    if correction.comment_ru:
+        lines.append("")
+        lines.append(f"💬 {esc(correction.comment_ru)}")
+    if created_cards:
+        lines.append(f"➕ Новых карточек из ошибок: {created_cards}")
+    return "\n".join(lines)
+
+
 def stats_message(stats) -> str:
     rate = "—" if stats.correct_rate_7d is None else f"{round(stats.correct_rate_7d * 100)}%"
     lines = [

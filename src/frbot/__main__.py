@@ -10,7 +10,7 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from frbot.bot.handlers import capture, review, stats, system
+from frbot.bot.handlers import capture, review, stats, system, write
 from frbot.bot.middleware import WhitelistMiddleware
 from frbot.config import Settings
 from frbot.db.models import Base
@@ -33,6 +33,7 @@ def build_dispatcher(
     dp.include_router(system.create_router())
     dp.include_router(review.create_router())
     dp.include_router(stats.create_router())
+    dp.include_router(write.create_router())
     dp.include_router(capture.create_router())
     dp["settings"] = settings
     dp["session_factory"] = session_factory
@@ -84,7 +85,7 @@ async def main() -> None:
     bot = build_bot(settings)
 
     scheduler = reminders.create_scheduler(settings.tz)
-    await reminders.setup_jobs(scheduler, bot, session_factory, settings)
+    await reminders.setup_jobs(scheduler, bot, dp, session_factory, settings)
     scheduler.start()
     dp["scheduler"] = scheduler
 

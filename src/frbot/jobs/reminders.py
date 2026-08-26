@@ -1,4 +1,4 @@
-"""APScheduler jobs: daily reminder, nightly DB backup.
+"""APScheduler jobs: daily reminder, daily writing prompt, nightly DB backup.
 
 The scheduler runs in the configured timezone (Europe/Paris); job times read
 runtime overrides from app_settings at setup, and /settings reschedules jobs
@@ -10,16 +10,25 @@ import logging
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.base import BaseStorage, StorageKey
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from frbot.bot.handlers.write import start_writing
 from frbot.bot.keyboards import start_review_kb
 from frbot.config import Settings
 from frbot.db import repo
 from frbot.db.session import SessionFactory
+
+
+class HasStorage(Protocol):
+    storage: BaseStorage
+
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +81,27 @@ async def send_reminder(bot: Bot, session_factory: SessionFactory) -> None:
         await bot.send_message(chat_id, "⏰ Сегодня нечего повторять 🎉")
 
 
+async def send_writing_prompt(
+    bot: Bot,
+    dispatcher: HasStorage,
+    session_factory: SessionFactory,
+    settings: Settings,
+) -> None:
+    chat_id = await _stored_chat_id(session_factory)
+    if chat_id is None:
+        return
+    state = FSMContext(
+        storage=dispatcher.storage,
+        key=StorageKey(bot_id=bot.id, chat_id=chat_id, user_id=chat_id),
+    )
+
+    async def answer(text: str, **kwargs: object) -> object:
+        return await bot.send_message(chat_id, text, **kwargs)
+
+    logger.info("writing prompt job fired")
+    await start_writing(answer, state, session_factory, settings)
+
+
 def _copy_and_prune(src: Path, today: str) -> tuple[Path | None, int]:
     if not src.exists():
         return None, 0
@@ -101,6 +131,7 @@ async def backup_database(settings: Settings) -> None:
 async def setup_jobs(
     scheduler: AsyncIOScheduler,
     bot: Bot,
+    dispatcher: HasStorage,
     session_factory: SessionFactory,
     settings: Settings,
 ) -> None:
@@ -114,10 +145,22 @@ async def setup_jobs(
         replace_existing=True,
     )
     scheduler.add_job(
+        send_writing_prompt,
+        _daily(cfg.writing_time),
+        id=WRITING_JOB_ID,
+        args=[bot, dispatcher, session_factory, settings],
+        replace_existing=True,
+    )
+    scheduler.add_job(
         backup_database,
         _daily(BACKUP_TIME),
         id=BACKUP_JOB_ID,
         args=[settings],
         replace_existing=True,
     )
-    logger.info("jobs scheduled: reminder %s, backup %s", cfg.reminder_time, BACKUP_TIME)
+    logger.info(
+        "jobs scheduled: reminder %s, writing %s, backup %s",
+        cfg.reminder_time,
+        cfg.writing_time,
+        BACKUP_TIME,
+    )

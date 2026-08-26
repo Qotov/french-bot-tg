@@ -1,0 +1,13 @@
+{
+  "corrected_text": "Hier, je suis allée au marché avec ma sœur. Nous avons acheté des pommes et du pain. Le soir, nous sommes rentrées à la maison très fatiguées.",
+  "errors": [
+    {"original": "j'ai allé", "corrected": "je suis allée", "type": "auxiliary", "explanation_ru": "aller спрягается с être, причастие согласуется."},
+    {"original": "avec mon sœur", "corrected": "avec ma sœur", "type": "gender", "explanation_ru": "sœur — женский род: ma sœur."},
+    {"original": "acheté les pommes", "corrected": "acheté des pommes", "type": "other", "explanation_ru": "Неопределённое количество — артикль des."},
+    {"original": "de le pain", "corrected": "du pain", "type": "other", "explanation_ru": "de + le сливаются в du."},
+    {"original": "dans le soir", "corrected": "le soir", "type": "preposition", "explanation_ru": "«Вечером» — просто le soir, без предлога."},
+    {"original": "nous avons rentré", "corrected": "nous sommes rentrées", "type": "auxiliary", "explanation_ru": "rentrer спрягается с être."},
+    {"original": "fatigué", "corrected": "fatiguées", "type": "agreement", "explanation_ru": "Согласование прилагательного: ж.р. мн.ч."}
+  ],
+  "comment_ru": "Хороший связный текст, работай над вспомогательными глаголами."
+}
