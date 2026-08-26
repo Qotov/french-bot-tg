@@ -7,9 +7,9 @@ dependencies = [
     "aiogram>=3.30",
     "aiosqlite>=0.22.1",
     "alembic>=1.19.1",
-    "anthropic>=1.0.0",
     "apscheduler>=3,<4",
     "fsrs>=6.3.1",
+    "google-genai>=2.20.0",
     "pydantic-settings>=2.15.0",
     "sqlalchemy[asyncio]>=2.0.52",
 ]

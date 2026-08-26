@@ -10,7 +10,7 @@ Full spec: [docs/TASK.md](docs/TASK.md).
 
 - **Capture** — send any French word or phrase; it becomes a structured card
   (lemma, IPA, definition, RU/EN translation, examples, collocations) via the
-  Claude API in a few seconds.
+  Gemini API in a few seconds.
 - **/review** — daily spaced-repetition sessions scheduled with FSRS-6.
 - **/write** — one short daily writing prompt; corrections come back with
   per-error explanations in Russian, and each error becomes a new card.
@@ -37,12 +37,12 @@ uv run python -m frbot
 | Key | Meaning | Default |
 |---|---|---|
 | `BOT_TOKEN` | Telegram bot token from @BotFather | required |
-| `ANTHROPIC_API_KEY` | Claude API key | required |
+| `GEMINI_API_KEY` | Gemini API key (Google AI Studio) | required |
 | `ALLOWED_USER_ID` | your numeric Telegram user id (the only whitelisted user) | required |
 | `TZ` | display/job timezone | `Europe/Paris` |
 | `DB_URL` | SQLAlchemy async URL | `sqlite+aiosqlite:///data/frbot.db` |
-| `MODEL_FAST` | model for enrichment + cloze | `claude-haiku-4-5-20251001` |
-| `MODEL_SMART` | model for writing correction | `claude-sonnet-5` |
+| `MODEL_FAST` | model for enrichment + cloze | `gemini-3.5-flash-lite` |
+| `MODEL_SMART` | model for writing correction | `gemini-3.5-flash-lite` |
 | `DAILY_NEW_LIMIT` | max new cards introduced per day | `15` |
 | `SESSION_MAX` | max cards per review session | `30` |
 | `REMINDER_TIME` | daily due-count reminder (HH:MM, local TZ) | `08:30` |

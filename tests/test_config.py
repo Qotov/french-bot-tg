@@ -8,7 +8,7 @@ def _base_kwargs(**overrides):
     kwargs = {
         "_env_file": None,
         "bot_token": "42:TEST-TOKEN",
-        "anthropic_api_key": "k",
+        "gemini_api_key": "k",
         "allowed_user_id": 1,
     }
     kwargs.update(overrides)
@@ -18,6 +18,8 @@ def _base_kwargs(**overrides):
 def test_defaults():
     s = Settings(**_base_kwargs())
     assert s.tz == "Europe/Paris"
+    assert s.model_fast == "gemini-3.5-flash-lite"
+    assert s.model_smart == "gemini-3.5-flash-lite"
     assert s.daily_new_limit == 15
     assert s.session_max == 30
     assert s.reminder_time == "08:30"

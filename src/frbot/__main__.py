@@ -45,7 +45,7 @@ def build_dispatcher(
     dp.include_router(capture.create_router())
     dp["settings"] = settings
     dp["session_factory"] = session_factory
-    dp["llm"] = llm or LLMClient(settings.anthropic_api_key)
+    dp["llm"] = llm or LLMClient(settings.gemini_api_key)
     dp["srs"] = srs or SrsScheduler(settings.desired_retention)
     return dp
 

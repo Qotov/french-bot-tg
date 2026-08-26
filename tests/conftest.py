@@ -14,7 +14,7 @@ def settings() -> Settings:
     return Settings(
         _env_file=None,
         bot_token="42:TEST-TOKEN",
-        anthropic_api_key="test-key",
+        gemini_api_key="test-key",
         allowed_user_id=ALLOWED_USER_ID,
     )
 

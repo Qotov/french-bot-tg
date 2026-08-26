@@ -1,4 +1,4 @@
-"""Anthropic wrapper: JSON-only completions parsed into pydantic schemas.
+"""Gemini wrapper: JSON-only completions parsed into pydantic schemas.
 
 Two retry layers, per the spec:
 - transport: 3 retries with exponential backoff on 429/5xx/connection errors;
@@ -12,8 +12,10 @@ import logging
 from collections.abc import Sequence
 from typing import Any
 
-import anthropic
-from anthropic import AsyncAnthropic
+import httpx
+from google import genai
+from google.genai import errors as genai_errors
+from google.genai import types as genai_types
 from pydantic import BaseModel, ValidationError
 
 from frbot.llm import prompts
@@ -26,9 +28,9 @@ TEMPERATURE_ENRICH = 0.2
 TEMPERATURE_DRILL = 0.2
 TEMPERATURE_CORRECTION = 0.0
 DEFAULT_BACKOFF: Sequence[float] = (1.0, 2.0, 4.0)
-# The SDK default is 600s per attempt; while an LLM call runs, the per-user
-# isolation lock is held, so keep attempts short.
-REQUEST_TIMEOUT = 30.0
+# While an LLM call runs, the per-user isolation lock is held, so keep
+# attempts short. google-genai HttpOptions.timeout is in milliseconds.
+REQUEST_TIMEOUT_MS = 30_000
 
 
 class LLMError(Exception):
@@ -47,9 +49,10 @@ class LLMClient:
         client: Any | None = None,
         backoff: Sequence[float] = DEFAULT_BACKOFF,
     ) -> None:
-        # The SDK's own retries are disabled; retry policy lives here.
-        self._client = client or AsyncAnthropic(
-            api_key=api_key, max_retries=0, timeout=REQUEST_TIMEOUT
+        # No SDK-internal retries are configured; retry policy lives here.
+        self._client = client or genai.Client(
+            api_key=api_key,
+            http_options=genai_types.HttpOptions(timeout=REQUEST_TIMEOUT_MS),
         )
         self._backoff = backoff
 
@@ -117,39 +120,38 @@ class LLMClient:
             if attempt > 0:
                 await asyncio.sleep(self._backoff[attempt - 1])
             try:
-                response = await self._client.messages.create(
+                response = await self._client.aio.models.generate_content(
                     model=model,
-                    max_tokens=MAX_TOKENS,
-                    temperature=temperature,
-                    system=system,
-                    messages=[{"role": "user", "content": prompt}],
+                    contents=prompt,
+                    config=genai_types.GenerateContentConfig(
+                        system_instruction=system,
+                        temperature=temperature,
+                        max_output_tokens=MAX_TOKENS,
+                    ),
                 )
-            except anthropic.APIConnectionError as exc:
+            except genai_errors.APIError as exc:
+                code = exc.code or 0
+                if code == 429 or code >= 500:
+                    logger.warning("llm status %s (attempt %d): %s", code, attempt + 1, exc)
+                    last_exc = exc
+                    continue
+                logger.error("llm non-retryable status %s: %s", code, exc)
+                raise LLMError(f"Gemini API error {code}") from exc
+            except (httpx.HTTPError, ConnectionError, TimeoutError) as exc:
                 logger.warning("llm connection error (attempt %d): %s", attempt + 1, exc)
                 last_exc = exc
                 continue
-            except anthropic.APIStatusError as exc:
-                if exc.status_code == 429 or exc.status_code >= 500:
-                    logger.warning(
-                        "llm status %s (attempt %d): %s", exc.status_code, attempt + 1, exc
-                    )
-                    last_exc = exc
-                    continue
-                logger.error("llm non-retryable status %s: %s", exc.status_code, exc)
-                raise LLMError(f"Anthropic API error {exc.status_code}") from exc
 
-            usage = getattr(response, "usage", None)
+            usage = getattr(response, "usage_metadata", None)
             logger.info(
                 "llm call model=%s input_tokens=%s output_tokens=%s",
                 model,
-                getattr(usage, "input_tokens", "?"),
-                getattr(usage, "output_tokens", "?"),
+                getattr(usage, "prompt_token_count", "?"),
+                getattr(usage, "candidates_token_count", "?"),
             )
-            return "".join(
-                block.text for block in response.content if getattr(block, "type", "") == "text"
-            )
+            return response.text or ""
         logger.error("llm call failed after %d attempts", len(self._backoff) + 1)
-        raise LLMError("Anthropic API unavailable") from last_exc
+        raise LLMError("Gemini API unavailable") from last_exc
 
 
 def _parse[T: BaseModel](text: str, schema: type[T]) -> T:

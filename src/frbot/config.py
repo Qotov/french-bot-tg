@@ -22,12 +22,14 @@ class Settings(BaseSettings):
     )
 
     bot_token: str
-    anthropic_api_key: str
+    gemini_api_key: str
     allowed_user_id: int
     tz: str = "Europe/Paris"
     db_url: str = "sqlite+aiosqlite:///data/frbot.db"
-    model_fast: str = "claude-haiku-4-5-20251001"
-    model_smart: str = "claude-sonnet-5"
+    # One model for everything: Gemini 3.5 Flash-Lite. The two knobs are kept
+    # so enrichment/drills and correction could be split again via .env.
+    model_fast: str = "gemini-3.5-flash-lite"
+    model_smart: str = "gemini-3.5-flash-lite"
     daily_new_limit: int = 15
     session_max: int = 30
     reminder_time: str = "08:30"

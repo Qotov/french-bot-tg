@@ -9,7 +9,7 @@ This spec is written for Claude Code. Build phase by phase. One branch per phase
 ## 1. Goals
 
 - Capture: save any French word or phrase in under 5 seconds by sending it to the bot.
-- Enrich: each capture becomes a structured card via the Claude API.
+- Enrich: each capture becomes a structured card via the Gemini API.
 - Review: daily spaced-repetition sessions scheduled with FSRS.
 - Write: one short daily writing prompt with correction and per-error explanations.
 - Drill: weekly grammar topics as cloze exercises (fill-the-gap sentences).
@@ -31,7 +31,7 @@ This spec is written for Claude Code. Build phase by phase. One branch per phase
 | Package manager | uv | latest |
 | Bot framework | aiogram | >= 3.30 (Bot API 10.2, fully async) |
 | Spaced repetition | fsrs (py-fsrs) | >= 6.3.1 (FSRS-6 algorithm) |
-| LLM | anthropic SDK | latest |
+| LLM | google-genai SDK (Gemini API) | latest |
 | DB | SQLite via SQLAlchemy 2.0 async + aiosqlite | latest |
 | Migrations | alembic | latest |
 | Config | pydantic-settings (pydantic v2) | latest |
@@ -39,12 +39,14 @@ This spec is written for Claude Code. Build phase by phase. One branch per phase
 | Lint + format | ruff | latest |
 | Tests | pytest + pytest-asyncio | latest |
 
-Models (Claude API, current IDs from https://platform.claude.com/docs/en/models/overview):
+Models (Gemini API, current IDs from https://ai.google.dev/gemini-api/docs/models):
 
-- `MODEL_FAST = claude-haiku-4-5-20251001` for enrichment and cloze generation ($1/$5 per MTok).
-- `MODEL_SMART = claude-sonnet-5` for writing correction ($2/$10 per MTok).
+- `MODEL_FAST = gemini-3.5-flash-lite` for enrichment and cloze generation.
+- `MODEL_SMART = gemini-3.5-flash-lite` for writing correction.
 
-Both are env-configurable. If an ID is retired, check the models overview page and update `.env`.
+One model (Gemini 3.5 Flash-Lite) is used for everything. Both knobs stay
+env-configurable so the roles could be split again. If an ID is retired, check
+the models overview page and update `.env`.
 
 ## 4. Repository layout
 
@@ -63,7 +65,7 @@ frbot/
       session.py            # engine + async session factory
       repo.py               # query functions
     llm/
-      client.py             # anthropic wrapper, JSON parsing, retries
+      client.py             # google-genai wrapper, JSON parsing, retries
       prompts.py            # all prompt templates
       schemas.py            # pydantic schemas for LLM JSON output
     srs/
@@ -91,12 +93,12 @@ frbot/
 
 ```
 BOT_TOKEN=
-ANTHROPIC_API_KEY=
+GEMINI_API_KEY=
 ALLOWED_USER_ID=            # single Telegram user id
 TZ=Europe/Paris
 DB_URL=sqlite+aiosqlite:///data/frbot.db
-MODEL_FAST=claude-haiku-4-5-20251001
-MODEL_SMART=claude-sonnet-5
+MODEL_FAST=gemini-3.5-flash-lite
+MODEL_SMART=gemini-3.5-flash-lite
 DAILY_NEW_LIMIT=15          # max new cards introduced per day
 SESSION_MAX=30              # max cards per review session
 REMINDER_TIME=08:30         # daily due-count reminder
@@ -203,7 +205,7 @@ Inline-keyboard editing of: REMINDER_TIME, WRITING_TIME, DAILY_NEW_LIMIT, SESSIO
 
 Short usage text. /start also stores the chat id for scheduled jobs.
 
-## 8. Claude API usage
+## 8. Gemini API usage
 
 General rules for `llm/client.py`:
 
@@ -293,13 +295,13 @@ APScheduler `AsyncIOScheduler` with timezone Europe/Paris, started next to the p
 
 - Stdlib logging, INFO level, one line per event (update received, LLM call, job run).
 - Telegram API errors: aiogram retries transient errors; log and skip otherwise.
-- Anthropic API errors: 3 retries with exponential backoff on 429/5xx, then a user-visible failure message.
+- Gemini API errors: 3 retries with exponential backoff on 429/5xx, then a user-visible failure message.
 - The bot must never crash on a malformed LLM response. Tests cover this path with fixtures.
 
 ## 12. Testing
 
 - pytest + pytest-asyncio, in-memory sqlite (`sqlite+aiosqlite:///:memory:`).
-- No live network calls. The anthropic client is mocked with fixture JSON files, including malformed ones.
+- No live network calls. The Gemini client is mocked with fixture JSON files, including malformed ones.
 - Required unit coverage: dedupe logic, queue builder (due ordering, new-card limit), fsrs wrapper round-trip (to_dict/from_dict, rating updates move `due` forward), all three JSON schemas (valid, invalid, retry path), error-card creation from corrections.
 - Handler tests: call handlers directly with constructed aiogram objects and a fake bot; assert reply text and keyboards.
 
@@ -313,7 +315,7 @@ Accept: bot runs with long polling; /start answers the allowed user; any other u
 
 ### Phase 1: capture and enrichment
 
-Capture handler, anthropic client with JSON parsing and retry, enrichment schema, card storage with dedupe, preview message, Delete and Regenerate buttons.
+Capture handler, Gemini client with JSON parsing and retry, enrichment schema, card storage with dedupe, preview message, Delete and Regenerate buttons.
 
 Accept: sending a word returns an enriched preview within seconds; sending the same word again returns the existing card; Delete removes it; malformed-LLM fixture test passes.
 
