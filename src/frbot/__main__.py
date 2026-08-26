@@ -10,9 +10,11 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from frbot.bot.handlers import capture, review, stats, system, write
+from frbot.bot.handlers import capture, drill, review, stats, system, write
+from frbot.bot.handlers import settings as settings_handlers
 from frbot.bot.middleware import WhitelistMiddleware
 from frbot.config import Settings
+from frbot.db import repo
 from frbot.db.models import Base
 from frbot.db.session import SessionFactory, create_engine_and_factory
 from frbot.jobs import reminders
@@ -34,6 +36,8 @@ def build_dispatcher(
     dp.include_router(review.create_router())
     dp.include_router(stats.create_router())
     dp.include_router(write.create_router())
+    dp.include_router(drill.create_router())
+    dp.include_router(settings_handlers.create_router())
     dp.include_router(capture.create_router())
     dp["settings"] = settings
     dp["session_factory"] = session_factory
@@ -81,6 +85,9 @@ async def main() -> None:
     settings = Settings()
     await run_migrations(settings)
     _engine, session_factory = create_engine_and_factory(settings.db_url)
+    async with session_factory() as session:
+        await repo.ensure_drill_topics_seeded(session)
+        await session.commit()
     dp = build_dispatcher(settings, session_factory)
     bot = build_bot(settings)
 

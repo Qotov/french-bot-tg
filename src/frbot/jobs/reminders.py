@@ -8,7 +8,7 @@ via reschedule_daily_job.
 import asyncio
 import logging
 import shutil
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 from zoneinfo import ZoneInfo
@@ -19,11 +19,13 @@ from aiogram.fsm.storage.base import BaseStorage, StorageKey
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from frbot.bot import render
 from frbot.bot.handlers.write import start_writing
 from frbot.bot.keyboards import start_review_kb
 from frbot.config import Settings
 from frbot.db import repo
 from frbot.db.session import SessionFactory
+from frbot.timeutil import day_end_utc
 
 
 class HasStorage(Protocol):
@@ -102,6 +104,34 @@ async def send_writing_prompt(
     await start_writing(answer, state, session_factory, settings)
 
 
+async def send_weekly_summary(
+    bot: Bot, session_factory: SessionFactory, settings: Settings
+) -> None:
+    """Sunday evening: stats summary + rotation to the next drill topic."""
+    chat_id = await _stored_chat_id(session_factory)
+    if chat_id is None:
+        return
+    now = datetime.now(UTC)
+    async with session_factory() as session:
+        stats = await repo.gather_stats(
+            session,
+            due_until=day_end_utc(now, settings.tz),
+            week_ago=now - timedelta(days=7),
+            month_ago=now - timedelta(days=30),
+        )
+        await repo.ensure_drill_topics_seeded(session)
+        today = now.astimezone(ZoneInfo(settings.tz)).date()
+        topic = await repo.rotate_drill_topic(session, week=today)
+        await session.commit()
+        topic_title = topic.title_fr
+    logger.info("weekly summary job: new topic %s", topic_title)
+    await bot.send_message(chat_id, render.stats_message(stats))
+    await bot.send_message(
+        chat_id,
+        f"📅 Новая тема недели: <b>{render.esc(topic_title)}</b> — /drill",
+    )
+
+
 def _copy_and_prune(src: Path, today: str) -> tuple[Path | None, int]:
     if not src.exists():
         return None, 0
@@ -152,6 +182,13 @@ async def setup_jobs(
         replace_existing=True,
     )
     scheduler.add_job(
+        send_weekly_summary,
+        CronTrigger(day_of_week="sun", hour=18, minute=0),
+        id=WEEKLY_JOB_ID,
+        args=[bot, session_factory, settings],
+        replace_existing=True,
+    )
+    scheduler.add_job(
         backup_database,
         _daily(BACKUP_TIME),
         id=BACKUP_JOB_ID,
@@ -159,7 +196,7 @@ async def setup_jobs(
         replace_existing=True,
     )
     logger.info(
-        "jobs scheduled: reminder %s, writing %s, backup %s",
+        "jobs scheduled: reminder %s, writing %s, weekly sun 18:00, backup %s",
         cfg.reminder_time,
         cfg.writing_time,
         BACKUP_TIME,

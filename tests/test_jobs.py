@@ -9,11 +9,13 @@ from frbot.db import repo
 from frbot.jobs.reminders import (
     BACKUP_JOB_ID,
     REMINDER_JOB_ID,
+    WEEKLY_JOB_ID,
     WRITING_JOB_ID,
     backup_database,
     create_scheduler,
     reschedule_daily_job,
     send_reminder,
+    send_weekly_summary,
     send_writing_prompt,
     setup_jobs,
 )
@@ -146,3 +148,34 @@ async def test_writing_prompt_job_sends_and_sets_state(fake_bot, session_factory
 async def test_writing_prompt_job_skipped_without_chat_id(fake_bot, session_factory, settings):
     await send_writing_prompt(fake_bot, fake_dispatcher(), session_factory, settings)
     assert fake_bot.session.sent_messages == []
+
+
+async def test_weekly_summary_sends_stats_and_rotates_topic(fake_bot, session_factory, settings):
+    await store_chat_id(session_factory)
+    await send_weekly_summary(fake_bot, session_factory, settings)
+
+    sent = fake_bot.session.sent_messages
+    assert len(sent) == 2
+    assert "Статистика" in sent[0].text
+    assert "тема недели" in sent[1].text
+    assert "Avoir ou être" in sent[1].text  # first rotation activates position 1
+
+    await send_weekly_summary(fake_bot, session_factory, settings)
+    assert "genre des noms" in fake_bot.session.sent_messages[-1].text
+
+    async with session_factory() as session:
+        active = await repo.get_active_drill_topic(session)
+    assert active.slug == "genre-des-noms"
+
+
+async def test_weekly_job_scheduled_on_sunday(fake_bot, session_factory, settings):
+    scheduler = create_scheduler(settings.tz)
+    await setup_jobs(scheduler, fake_bot, fake_dispatcher(), session_factory, settings)
+    scheduler.start(paused=True)
+    try:
+        weekly = scheduler.get_job(WEEKLY_JOB_ID)
+        assert weekly is not None
+        assert "day_of_week='sun'" in str(weekly.trigger)
+        assert "hour='18'" in str(weekly.trigger)
+    finally:
+        scheduler.shutdown(wait=False)
