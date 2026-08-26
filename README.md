@@ -1,9 +1,10 @@
 # frbot — French Learning Telegram Bot
 
-A personal Telegram tutor for French (B1 → B2). Words you meet during the day
-become spaced-repetition cards, short daily writing gets corrected, grammar is
-drilled weekly — and **every mistake you make becomes a new card**. Single-user
-by design: one bot, one learner.
+A Telegram tutor for French (A2 → B2). Words you meet during the day become
+spaced-repetition cards, short daily writing gets corrected, grammar is drilled
+weekly — and **every mistake you make becomes a new card**. Invite-only: one
+bot instance serves a small closed cohort (default cap: 50 learners), each with
+their own deck, level, and schedule.
 
 Powered by [aiogram](https://aiogram.dev) (long polling, no webhooks),
 [FSRS-6](https://github.com/open-spaced-repetition/py-fsrs) scheduling, and
@@ -38,7 +39,13 @@ voice-note understanding. Full build spec: [docs/TASK.md](docs/TASK.md).
 | `/stats` | due today, 7-day accuracy, top error types |
 | `/settings` | change reminder/writing times and limits on the fly |
 | `/stop` | cancel the current dialogue/session |
+| `/level` | switch level (A2 / B1 / B2) — recalibrates every AI prompt |
+| `/feedback` | write to the bot's author |
 | `/help` | command reference |
+
+Admin-only (invisible to participants): `/invite [count] [uses]` generates
+join links, `/users` shows the roster with each person's 7-day activity, and
+`/broadcast <text>` messages the cohort.
 
 Every card preview has **Delete** and **Regenerate** buttons; duplicates are
 detected by lemma, so sending the same word twice never creates two cards.
@@ -47,35 +54,47 @@ detected by lemma, so sending the same word twice never creates two cards.
 
 - **08:30** — reminder with the number of cards due and a *Start review* button
 - **19:00** — the daily writing prompt
-- **Sunday 18:00** — weekly stats summary + rotation to the next grammar topic
+- **Sunday 18:00** — each participant's week in review + next week's grammar topic
 - **03:00** — SQLite online backup to `data/backups/` (last 14 kept)
 
-Times are configurable via `.env` or `/settings` (runtime changes persist in
-the DB and reschedule the jobs immediately).
+The two daily times are **per participant** — each person sets their own in
+`/settings`, and the change takes effect within the minute. The weekly grammar
+topic is shared by the whole cohort and derived from the ISO week number, so
+everyone drills the same thing at the same time.
 
 ## Setup
 
-You need Python 3.13, [uv](https://docs.astral.sh/uv/), and two keys:
+You need Python 3.13, [uv](https://docs.astral.sh/uv/), and three values:
 
 1. **Telegram bot token** — talk to [@BotFather](https://t.me/BotFather),
    `/newbot`, copy the token.
 2. **Gemini API key** — create one in
    [Google AI Studio](https://aistudio.google.com/apikey).
 3. **Your Telegram user id** — message [@userinfobot](https://t.me/userinfobot)
-   (a number like `123456789`). The bot answers this id only; everyone else is
-   silently ignored.
+   (a number like `123456789`). You become the admin automatically; everyone
+   else needs an invite.
 
 ```bash
 git clone <repo-url> frbot
 cd frbot
 uv sync
-cp .env.example .env   # fill in BOT_TOKEN, GEMINI_API_KEY, ALLOWED_USER_ID
+cp .env.example .env   # fill in BOT_TOKEN, GEMINI_API_KEY, ADMIN_USER_ID
 uv run python -m frbot
 ```
 
 Migrations run automatically on startup (or manually:
-`uv run alembic upgrade head`). Send `/start` to the bot once so the scheduled
-jobs know where to write.
+`uv run alembic upgrade head`). Send `/start` once to register yourself.
+
+### Inviting people
+
+```
+/invite 10        → ten single-use join links
+/invite 1 25      → one link that 25 people can use
+```
+
+Each link is `https://t.me/<yourbot>?start=CODE`. New participants pick their
+level on arrival and get a three-step first-run message. `/users` tells you who
+is actually practising — the number that matters during a pilot.
 
 ## Configuration (.env)
 
@@ -83,7 +102,9 @@ jobs know where to write.
 |---|---|---|
 | `BOT_TOKEN` | Telegram bot token from @BotFather | required |
 | `GEMINI_API_KEY` | Gemini API key (Google AI Studio) | required |
-| `ALLOWED_USER_ID` | your numeric Telegram user id (the only whitelisted user) | required |
+| `ADMIN_USER_ID` | your numeric Telegram user id (bot owner, auto-registered as admin) | required |
+| `MAX_USERS` | hard cap on registrations | `50` |
+| `DAILY_LLM_ACTIONS` | per-user daily cap on AI actions (reviews are free) | `150` |
 | `TZ` | timezone for display and scheduled jobs | `Europe/Paris` |
 | `DB_URL` | SQLAlchemy async URL | `sqlite+aiosqlite:///data/frbot.db` |
 | `MODEL_FAST` | model for enrichment, cloze, topic packs, voice transcription | `gemini-3.5-flash-lite` |
@@ -133,22 +154,29 @@ Long polling only — no inbound ports, no TLS, no reverse proxy.
 
 ## Data
 
-Everything lives in one SQLite file, `data/frbot.db` (gitignored): cards with
-their FSRS state, review log, writings with corrections, drill topics, and
-runtime settings. A nightly job snapshots it with SQLite's online-backup API to
+Everything lives in one SQLite file, `data/frbot.db` (gitignored): participants,
+invites, cards with their FSRS state, review log, writings with corrections,
+and drill topics. Every card, review, and writing is owned by exactly one user;
+the query layer requires an explicit owner on every read, so no participant can
+see another's deck.
+
+Scale: SQLite plus long polling is comfortable to roughly 5,000 daily users —
+about 100× the default pilot cap — so nothing here needs Postgres or webhooks
+before then. A nightly job snapshots it with SQLite's online-backup API to
 `data/backups/frbot-YYYY-MM-DD.db` and prunes to the last 14 — restoring is
 just copying a snapshot back.
 
 ## Development
 
 ```bash
-uv run pytest          # 170+ tests; no network — Telegram and the LLM are faked
+uv run pytest          # 216 tests; no network — Telegram and the LLM are faked
 uv run ruff check .    # lint
 uv run ruff format .   # format
 uv run alembic upgrade head   # apply migrations manually
 ```
 
 Layout (`src/frbot/`): `bot/handlers/` — one module per command plus capture;
+`bot/middleware.py` — the invite/roster gate that resolves each sender;
 `llm/` — the Gemini client, prompt templates, and strict pydantic schemas for
 every JSON contract (malformed output triggers one corrective retry, never a
 crash); `srs/` — the FSRS wrapper and review-queue builder; `db/` — SQLAlchemy
