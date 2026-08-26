@@ -59,7 +59,9 @@ def _alembic_upgrade() -> bool:
     from alembic import command
     from alembic.config import Config
 
-    command.upgrade(Config("alembic.ini"), "head")
+    cfg = Config("alembic.ini")
+    cfg.attributes["configure_logger"] = False  # keep the app's logging setup
+    command.upgrade(cfg, "head")
     return True
 
 
