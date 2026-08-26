@@ -153,8 +153,14 @@ def _copy_and_prune(src: Path, today: str) -> tuple[Path | None, int]:
     backups_dir.mkdir(parents=True, exist_ok=True)
     dst = backups_dir / f"frbot-{today}.db"
     # SQLite online-backup API: consistent even while the bot is writing.
-    with sqlite3.connect(src) as source, sqlite3.connect(dst) as target:
+    # (sqlite3's context manager only commits; close explicitly.)
+    source = sqlite3.connect(src)
+    target = sqlite3.connect(dst)
+    try:
         source.backup(target)
+    finally:
+        target.close()
+        source.close()
     stale = sorted(backups_dir.glob("frbot-*.db"))[:-BACKUP_KEEP]
     for path in stale:
         path.unlink()
