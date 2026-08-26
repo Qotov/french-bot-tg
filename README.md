@@ -9,7 +9,9 @@ their own deck, level, and schedule.
 Powered by [aiogram](https://aiogram.dev) (long polling, no webhooks),
 [FSRS-6](https://github.com/open-spaced-repetition/py-fsrs) scheduling, and
 Gemini 3.5 Flash-Lite for enrichment, correction, and conversation — including
-voice-note understanding. Full build spec: [docs/TASK.md](docs/TASK.md).
+voice-note understanding.
+
+Docs: [build spec](docs/TASK.md) · [running a pilot](docs/PILOT.md).
 
 ## The learning loop
 
