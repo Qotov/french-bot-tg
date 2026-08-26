@@ -5,13 +5,21 @@ callers own the transaction (commit at the end of a handler/job).
 import logging
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from frbot.config import TIME_RE, Settings
-from frbot.db.models import AppSetting, Card, CardKind, CardState, Review, Writing
+from frbot.db.models import (
+    AppSetting,
+    Card,
+    CardKind,
+    CardState,
+    DrillTopic,
+    Review,
+    Writing,
+)
 from frbot.srs.scheduler import ReviewResult, SrsScheduler
 
 logger = logging.getLogger(__name__)
@@ -241,6 +249,71 @@ async def create_error_card(
     session.add(card)
     await session.flush()
     return card
+
+
+# -- drill topics -------------------------------------------------------------
+
+SEED_TOPICS: tuple[tuple[str, str], ...] = (
+    ("aux-passe-compose", "Avoir ou être au passé composé"),
+    ("genre-des-noms", "Le genre des noms"),
+    ("depuis-pendant-il-y-a", "Depuis, pendant, il y a"),
+    ("de-apres-negation", "De après la négation (pas de, plus de)"),
+    ("si-clauses", "La concordance des temps dans les phrases avec si"),
+    ("subjonctif-present", "Le subjonctif présent après il faut que, vouloir que"),
+    ("pronoms-y-en", "Les pronoms y et en"),
+    ("ordre-des-pronoms", "L'ordre des pronoms compléments (COD / COI)"),
+    ("relatifs-qui-que-dont", "Les pronoms relatifs qui, que, dont"),
+    ("futur-vs-conditionnel", "Futur simple ou conditionnel"),
+)
+
+
+async def ensure_drill_topics_seeded(session: AsyncSession) -> None:
+    count = (await session.execute(select(func.count(DrillTopic.id)))).scalar_one()
+    if count:
+        return
+    for position, (slug, title_fr) in enumerate(SEED_TOPICS, start=1):
+        session.add(DrillTopic(slug=slug, title_fr=title_fr, position=position))
+    await session.flush()
+    logger.info("seeded %d drill topics", len(SEED_TOPICS))
+
+
+async def get_active_drill_topic(session: AsyncSession) -> DrillTopic | None:
+    stmt = (
+        select(DrillTopic)
+        .where(DrillTopic.active_week.is_not(None))
+        .order_by(DrillTopic.active_week.desc(), DrillTopic.position.desc())
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def rotate_drill_topic(session: AsyncSession, *, week: date) -> DrillTopic:
+    """Activate the next topic by position (wrapping) and return it."""
+    topics = list(
+        (await session.execute(select(DrillTopic).order_by(DrillTopic.position))).scalars()
+    )
+    if not topics:
+        raise ValueError("drill_topics is empty; seed it first")
+    current = await get_active_drill_topic(session)
+    if current is None:
+        next_topic = topics[0]
+    else:
+        following = [t for t in topics if t.position > current.position]
+        next_topic = following[0] if following else topics[0]
+    next_topic.active_week = week
+    await session.flush()
+    logger.info("drill topic rotated to %s (%s)", next_topic.slug, week)
+    return next_topic
+
+
+async def get_recent_lemmas(session: AsyncSession, *, limit: int = 20) -> list[str]:
+    stmt = (
+        select(Card.lemma)
+        .where(Card.kind == CardKind.vocab.value, Card.suspended.is_(False))
+        .order_by(Card.id.desc())
+        .limit(limit)
+    )
+    return list((await session.execute(stmt)).scalars().all())
 
 
 # -- stats --------------------------------------------------------------------
