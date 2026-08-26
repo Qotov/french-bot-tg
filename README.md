@@ -8,12 +8,18 @@ Full spec: [docs/TASK.md](docs/TASK.md).
 
 ## Features
 
-- **Capture** — send any French word or phrase; it becomes a structured card
-  (lemma, IPA, definition, RU/EN translation, examples, collocations) via the
-  Gemini API in a few seconds.
+- **Capture** — send any French word or phrase (typed or as a **voice note**);
+  it becomes a structured card (lemma, IPA, definition, RU/EN translation,
+  examples, collocations) via the Gemini API in a few seconds.
 - **/review** — daily spaced-repetition sessions scheduled with FSRS-6.
-- **/write** — one short daily writing prompt; corrections come back with
-  per-error explanations in Russian, and each error becomes a new card.
+- **/write** — one short daily writing prompt; answer by text **or voice**;
+  corrections come back with per-error explanations in Russian, and each error
+  becomes a new card.
+- **/talk** — free conversation with the tutor (text or voice): the bot
+  replies in French and corrects your mistakes in parallel; mistakes become
+  cards. End with /stop.
+- **/topic** — generate a pack of B2-level words on any topic
+  (`/topic ресторан 10`), pick the ones you want, and they become cards.
 - **/drill** — weekly grammar topic with 5 cloze exercises; wrong answers
   become cards.
 - **/stats** — due counts, review accuracy, top error types.
