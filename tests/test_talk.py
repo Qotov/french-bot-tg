@@ -218,4 +218,58 @@ async def test_stop_ends_dialogue(fake_bot, session_factory, settings):
 async def test_stop_outside_dialogue(fake_bot):
     state = make_state(fake_bot)
     await cmd_stop(make_message("/stop", bot=fake_bot), state)
-    assert "нет активного диалога" in fake_bot.session.sent_messages[-1].text
+    assert "нет активной сессии" in fake_bot.session.sent_messages[-1].text
+
+
+async def test_stop_cancels_any_active_flow(fake_bot):
+    from frbot.bot.handlers.topic import TopicStates
+
+    state = make_state(fake_bot)
+    await state.set_state(TopicStates.choosing)
+    await cmd_stop(make_message("/stop", bot=fake_bot), state)
+    assert await state.get_state() is None
+    assert "прервана" in fake_bot.session.sent_messages[-1].text
+
+
+async def test_overlong_text_turn_rejected(fake_bot, session_factory, settings):
+    from frbot.bot.handlers.talk import TURN_MAX_LEN
+
+    llm = FakeLLM(talk_results=[OPENER])
+    state = await start_talk(fake_bot, session_factory, settings, llm)
+    await handle_text_turn(
+        make_message("x" * (TURN_MAX_LEN + 1), bot=fake_bot),
+        state,
+        session_factory,
+        llm,
+        srs(),
+        settings,
+    )
+    assert "Слишком длинно" in fake_bot.session.sent_messages[-1].text
+    assert len(llm.talk_calls) == 1  # only the opener
+    assert await state.get_state() == TalkStates.talking.state
+
+
+async def test_turn_reply_never_exceeds_telegram_limit(fake_bot, session_factory, settings):
+    monster = TalkTurn(
+        transcript="mot " * 500,
+        corrected_fr="Phrase corrigée.",
+        errors=[
+            {
+                "original": "x" * 400,
+                "corrected": "y" * 400,
+                "type": "other",
+                "explanation_ru": "объяснение " * 40,
+            }
+        ]
+        * 5,
+        reply_fr="réponse " * 500,
+    )
+    llm = FakeLLM(talk_results=[OPENER, monster])
+    state = await start_talk(fake_bot, session_factory, settings, llm)
+    await handle_text_turn(
+        make_message("Bonjour", bot=fake_bot), state, session_factory, llm, srs(), settings
+    )
+    reply = fake_bot.session.sent_messages[-1].text
+    assert len(reply) <= 4096
+    assert reply.count("<i>") == reply.count("</i>")
+    assert reply.count("<b>") == reply.count("</b>")

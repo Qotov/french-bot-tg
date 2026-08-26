@@ -144,3 +144,39 @@ async def test_voice_answer_empty_transcript_keeps_state(fake_bot, session_facto
     )
     assert "Не расслышал" in fake_bot.session.sent_messages[-1].text
     assert await state.get_state() == WriteStates.awaiting_answer.state
+
+
+async def test_voice_capture_skips_overlong_extracted_phrase(fake_bot, session_factory, settings):
+    from frbot.bot.handlers.capture import CAPTURE_MAX_LEN
+
+    long_phrase = "mot " * (CAPTURE_MAX_LEN // 3)
+    llm = FakeLLM(
+        voice_words_results=[VoiceWords(words=[long_phrase, "boulangerie"])],
+        enrich_results=[enrichment_for("boulangerie")],
+    )
+    await handle_voice_capture(
+        make_voice_message(bot=fake_bot), session_factory, llm, srs(), settings
+    )
+    assert llm.enrich_calls == ["boulangerie"]  # the utterance-sized item skipped
+    assert await card_count(session_factory) == 1
+    assert any("слишком длинно" in (m.text or "").lower() for m in fake_bot.session.sent_messages)
+
+
+async def test_voice_capture_stops_after_first_llm_failure(fake_bot, session_factory, settings):
+    llm = FakeLLM(
+        voice_words_results=[VoiceWords(words=["premier", "deuxième", "troisième"])],
+        enrich_results=[LLMError("down"), enrichment_for("deuxième"), enrichment_for("troisième")],
+    )
+    await handle_voice_capture(
+        make_voice_message(bot=fake_bot), session_factory, llm, srs(), settings
+    )
+    assert llm.enrich_calls == ["premier"]  # no retries for the rest
+    assert await card_count(session_factory) == 0
+    assert any("не добавлены" in (m.text or "") for m in fake_bot.session.sent_messages)
+
+
+async def test_voice_while_awaiting_setting_asks_for_text(fake_bot):
+    from frbot.bot.handlers.settings import on_voice_while_awaiting
+
+    await on_voice_while_awaiting(make_voice_message(bot=fake_bot))
+    assert "текстом" in fake_bot.session.sent_messages[-1].text

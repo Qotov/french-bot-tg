@@ -47,8 +47,8 @@ uv run python -m frbot
 | `ALLOWED_USER_ID` | your numeric Telegram user id (the only whitelisted user) | required |
 | `TZ` | display/job timezone | `Europe/Paris` |
 | `DB_URL` | SQLAlchemy async URL | `sqlite+aiosqlite:///data/frbot.db` |
-| `MODEL_FAST` | model for enrichment + cloze | `gemini-3.5-flash-lite` |
-| `MODEL_SMART` | model for writing correction | `gemini-3.5-flash-lite` |
+| `MODEL_FAST` | model for enrichment, cloze, topic packs, voice transcription | `gemini-3.5-flash-lite` |
+| `MODEL_SMART` | model for writing correction and /talk conversation | `gemini-3.5-flash-lite` |
 | `DAILY_NEW_LIMIT` | max new cards introduced per day | `15` |
 | `SESSION_MAX` | max cards per review session | `30` |
 | `REMINDER_TIME` | daily due-count reminder (HH:MM, local TZ) | `08:30` |

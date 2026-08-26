@@ -34,11 +34,15 @@ logger = logging.getLogger(__name__)
 
 HISTORY_MAX = 12  # kept lines ("Élève: …" / "Tuteur: …")
 ERRORS_SHOWN_MAX = 5
+TURN_MAX_LEN = 1000  # keeps the LLM's structured reply inside its token budget
+TRANSCRIPT_SHOWN_MAX = 600
 FAIL_TEXT = "⚠️ Не расслышал / не получилось ответить. Скажи ещё раз?"
 OPEN_FAIL_TEXT = "⚠️ Не получилось начать диалог. Попробуй /talk ещё раз через минуту."
 VOICE_FAIL_TEXT = "⚠️ Не получилось скачать голосовое. Попробуй ещё раз."
 STOPPED_TEXT = "👋 Диалог завершён. Начать новый: /talk"
-NOT_TALKING_TEXT = "Сейчас нет активного диалога. Начать: /talk"
+NOT_TALKING_TEXT = "Сейчас нет активной сессии. Начать диалог: /talk"
+FLOW_STOPPED_TEXT = "👌 Текущая сессия прервана."
+TOO_LONG_TEXT = f"Слишком длинно для одной реплики (до {TURN_MAX_LEN} символов) — разбей на части."
 
 
 class TalkStates(StatesGroup):
@@ -66,16 +70,23 @@ async def cmd_talk(
     logger.info("talk session started")
     await message.answer(
         "💬 Диалог начат — отвечай текстом или голосом. Закончить: /stop\n\n"
-        f"🇫🇷 {render.esc(turn.reply_fr)}"
+        f"🇫🇷 {render.esc(_clip(turn.reply_fr, 3000))}"
     )
 
 
 async def cmd_stop(message: Message, state: FSMContext) -> None:
-    if await state.get_state() == TalkStates.talking.state:
-        await state.clear()
+    """Cancels whatever session is active: /talk, but also a pending /write
+    answer, /topic input, or /settings value — the state must never stay armed
+    after the user said stop."""
+    current = await state.get_state()
+    if current is None:
+        await message.answer(NOT_TALKING_TEXT)
+        return
+    await state.clear()
+    if current == TalkStates.talking.state:
         await message.answer(STOPPED_TEXT)
     else:
-        await message.answer(NOT_TALKING_TEXT)
+        await message.answer(FLOW_STOPPED_TEXT)
 
 
 async def handle_text_turn(
@@ -88,6 +99,9 @@ async def handle_text_turn(
 ) -> None:
     text = (message.text or "").strip()
     if not text:
+        return
+    if len(text) > TURN_MAX_LEN:
+        await message.answer(TOO_LONG_TEXT)
         return
     await _turn(message, state, session_factory, llm, srs, settings, text=text)
 
@@ -145,14 +159,20 @@ async def _create_error_cards(
     return created
 
 
+def _clip(value: str, limit: int) -> str:
+    value = value.strip()
+    return value if len(value) <= limit else value[:limit] + "…"
+
+
 def _turn_reply(turn: TalkTurn, created: int, *, from_voice: bool) -> str:
     lines = []
     if from_voice and turn.transcript.strip():
-        lines.append(f"🎙 <i>{render.esc(turn.transcript.strip())}</i>")
+        lines.append(f"🎙 <i>{render.esc(_clip(turn.transcript, TRANSCRIPT_SHOWN_MAX))}</i>")
     for error in turn.errors[:ERRORS_SHOWN_MAX]:
         lines.append(
-            f"✏️ ❌ {render.esc(error.original)} → ✅ <b>{render.esc(error.corrected)}</b>"
-            f" — {render.esc(error.explanation_ru)}"
+            f"✏️ ❌ {render.esc(_clip(error.original, 150))}"
+            f" → ✅ <b>{render.esc(_clip(error.corrected, 150))}</b>"
+            f" — {render.esc(_clip(error.explanation_ru, 200))}"
         )
     hidden = len(turn.errors) - ERRORS_SHOWN_MAX
     if hidden > 0:
@@ -162,7 +182,7 @@ def _turn_reply(turn: TalkTurn, created: int, *, from_voice: bool) -> str:
     if lines:
         lines.append("")
     lines.append(f"🇫🇷 {render.esc(turn.reply_fr)}")
-    return "\n".join(lines)
+    return render.fit_lines(lines)
 
 
 async def _turn(

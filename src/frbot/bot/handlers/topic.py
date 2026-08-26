@@ -40,17 +40,25 @@ class TopicStates(StatesGroup):
     selecting = State()
 
 
+COUNT_ARG_MAX = 30  # an edge number above this is part of the topic ("les années 80")
+
+
 def parse_topic_args(raw: str) -> tuple[str, int] | None:
-    """ "ресторан 15" / "15 ресторан" / "ресторан" -> (topic, count)."""
+    """ "ресторан 15" / "15 ресторан" / "ресторан" -> (topic, count).
+
+    Only a leading or trailing number in a plausible range counts as the word
+    count; interior or large numbers stay in the topic itself.
+    """
+    parts = raw.split()
+    if not parts:
+        return None
     count = DEFAULT_COUNT
-    words: list[str] = []
-    for part in raw.split():
-        if part.isdigit():
-            count = int(part)
-        else:
-            words.append(part)
-    topic = " ".join(words).strip(" ,.")
-    if not topic:
+    if len(parts) >= 2 and parts[-1].isdigit() and 1 <= int(parts[-1]) <= COUNT_ARG_MAX:
+        count = int(parts.pop())
+    elif len(parts) >= 2 and parts[0].isdigit() and 1 <= int(parts[0]) <= COUNT_ARG_MAX:
+        count = int(parts.pop(0))
+    topic = " ".join(parts).strip(" ,.")
+    if not topic or topic.isdigit():
         return None
     return topic, max(MIN_COUNT, min(count, TOPIC_WORDS_MAX))
 
@@ -128,15 +136,34 @@ async def _generate(
     await state.set_state(TopicStates.selecting)
     await state.set_data({"topic": topic, "words": fresh, "selected": selected})
     logger.info("topic %r: %d candidate words", topic, len(fresh))
-    await message.answer(
+    sent = await message.answer(
         _selection_text(topic, fresh),
         reply_markup=topic_select_kb([w["lemma"] for w in fresh], set(selected)),
     )
+    # Bind the pack to its message so a superseded pack's keyboard goes inert.
+    await state.update_data(message_id=sent.message_id)
+
+
+async def _is_stale_pack(query: CallbackQuery, state: FSMContext) -> bool:
+    """A keyboard from a superseded /topic pack must not drive the new pack."""
+    data = await state.get_data()
+    bound_id = data.get("message_id")
+    if (
+        bound_id is not None
+        and isinstance(query.message, Message)
+        and query.message.message_id != bound_id
+    ):
+        await safe_edit_text(query.message, "Эта подборка устарела.")
+        await safe_answer(query, "Эта подборка уже не активна.")
+        return True
+    return False
 
 
 async def on_toggle(query: CallbackQuery, state: FSMContext) -> None:
     if await state.get_state() != TopicStates.selecting.state:
         await safe_answer(query, "Подборка уже не активна — /topic")
+        return
+    if await _is_stale_pack(query, state):
         return
     index = int(query.data.split(":")[2])
     data = await state.get_data()
@@ -161,6 +188,8 @@ async def on_toggle(query: CallbackQuery, state: FSMContext) -> None:
 
 async def on_cancel(query: CallbackQuery, state: FSMContext) -> None:
     if await state.get_state() == TopicStates.selecting.state:
+        if await _is_stale_pack(query, state):
+            return
         await state.clear()
     if isinstance(query.message, Message):
         await safe_edit_text(query.message, "Подборка отменена.")
@@ -177,6 +206,8 @@ async def on_save(
 ) -> None:
     if await state.get_state() != TopicStates.selecting.state:
         await safe_answer(query, "Подборка уже не активна — /topic")
+        return
+    if await _is_stale_pack(query, state):
         return
     data = await state.get_data()
     words: list[dict] = data["words"]
@@ -235,12 +266,17 @@ async def on_save(
         await query.message.answer("\n".join(lines))
 
 
+async def on_voice_while_choosing(message: Message) -> None:
+    await message.answer("Пришли тему текстом, пожалуйста (или /stop, чтобы выйти).")
+
+
 def create_router() -> Router:
     router = Router(name="topic")
     router.message.register(cmd_topic, Command("topic"))
     router.message.register(
         handle_topic_input, TopicStates.choosing, F.text, ~F.text.startswith("/")
     )
+    router.message.register(on_voice_while_choosing, TopicStates.choosing, F.voice)
     router.callback_query.register(on_toggle, F.data.startswith("topic:toggle:"))
     router.callback_query.register(on_save, F.data == "topic:save")
     router.callback_query.register(on_cancel, F.data == "topic:cancel")

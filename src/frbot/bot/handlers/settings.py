@@ -116,6 +116,10 @@ async def handle_value(
     await message.answer(f"✅ {key} = {value}", reply_markup=settings_kb(values))
 
 
+async def on_voice_while_awaiting(message: Message) -> None:
+    await message.answer("Пришли значение текстом, пожалуйста (или /stop, чтобы выйти).")
+
+
 def create_router() -> Router:
     router = Router(name="settings")
     router.message.register(cmd_settings, Command("settings"))
@@ -123,4 +127,5 @@ def create_router() -> Router:
     router.message.register(
         handle_value, SettingsStates.awaiting_value, F.text, ~F.text.startswith("/")
     )
+    router.message.register(on_voice_while_awaiting, SettingsStates.awaiting_value, F.voice)
     return router

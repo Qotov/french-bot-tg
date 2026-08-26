@@ -150,7 +150,19 @@ async def test_topic_flow_via_dispatcher(dp, fake_bot, session_factory, llm):
     assert llm.topic_calls
     assert any("ресторан" in (m.text or "") for m in fake_bot.session.sent_messages)
 
-    await dp.feed_update(fake_bot, callback_update("topic:save", update_id=2))
+    # The save callback must come from the message the pack is bound to.
+    from aiogram.fsm.storage.base import StorageKey
+
+    from tests.fakes import ALLOWED_USER_ID, make_message
+
+    pack_data = await dp.storage.get_data(
+        StorageKey(bot_id=fake_bot.id, chat_id=ALLOWED_USER_ID, user_id=ALLOWED_USER_ID)
+    )
+    save_query = make_callback_query(
+        "topic:save",
+        message=make_message("selection", message_id=pack_data["message_id"]),
+    )
+    await dp.feed_update(fake_bot, Update(update_id=2, callback_query=save_query))
     async with session_factory() as session:
         card = (await session.execute(select(Card).where(Card.lemma != ""))).scalars().first()
     assert card is not None

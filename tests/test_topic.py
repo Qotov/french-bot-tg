@@ -51,6 +51,14 @@ def command_obj(args: str | None) -> SimpleNamespace:
     return SimpleNamespace(args=args)
 
 
+async def pack_query(data_str: str, state: FSMContext, bot):
+    """Callback bound to the current pack's selection message."""
+    mid = (await state.get_data())["message_id"]
+    return make_callback_query(
+        data_str, bot=bot, message=make_message("selection", bot=bot, message_id=mid)
+    )
+
+
 def enrichment_for(lemma: str) -> Enrichment:
     return Enrichment.model_validate(enrichment_dict(lemma))
 
@@ -72,10 +80,13 @@ def test_parse_topic_args():
     assert parse_topic_args("ресторан") == ("ресторан", 10)
     assert parse_topic_args("ресторан 15") == ("ресторан", 15)
     assert parse_topic_args("15 la cuisine française") == ("la cuisine française", 15)
-    assert parse_topic_args("ресторан 100") == ("ресторан", 20)  # capped
     assert parse_topic_args("ресторан 1") == ("ресторан", 3)  # floored
+    assert parse_topic_args("ресторан 25") == ("ресторан", 20)  # capped
     assert parse_topic_args("") is None
     assert parse_topic_args("12") is None  # a number is not a topic
+    # Numbers that belong to the topic stay in the topic.
+    assert parse_topic_args("les années 80") == ("les années 80", 10)
+    assert parse_topic_args("top 10 des verbes") == ("top 10 des verbes", 10)
 
 
 # --------------------------------------------------------------------- flows
@@ -160,11 +171,11 @@ async def test_toggle_and_save_creates_selected_cards(fake_bot, session_factory,
         settings,
     )
     # Deselect index 1 ("commander").
-    await on_toggle(make_callback_query("topic:toggle:1", bot=fake_bot), state)
+    await on_toggle(await pack_query("topic:toggle:1", state, fake_bot), state)
     assert (await state.get_data())["selected"] == [0, 2]
 
     await on_save(
-        make_callback_query("topic:save", bot=fake_bot),
+        await pack_query("topic:save", state, fake_bot),
         state,
         session_factory,
         llm,
@@ -193,9 +204,9 @@ async def test_save_skips_duplicates_from_enrichment(fake_bot, session_factory, 
         llm,
         settings,
     )
-    await on_toggle(make_callback_query("topic:toggle:2", bot=fake_bot), state)  # keep 0, 1
+    await on_toggle(await pack_query("topic:toggle:2", state, fake_bot), state)  # keep 0, 1
     await on_save(
-        make_callback_query("topic:save", bot=fake_bot),
+        await pack_query("topic:save", state, fake_bot),
         state,
         session_factory,
         llm,
@@ -217,7 +228,7 @@ async def test_cancel_clears_state(fake_bot, session_factory, settings):
         llm,
         settings,
     )
-    await on_cancel(make_callback_query("topic:cancel", bot=fake_bot), state)
+    await on_cancel(await pack_query("topic:cancel", state, fake_bot), state)
     assert await state.get_state() is None
     assert await vocab_count(session_factory) == 0
 
@@ -256,3 +267,49 @@ async def test_all_words_already_known(fake_bot, session_factory, settings):
 
 def test_fixture_sanity():
     assert load_fixture_json("enrichment_valid.json")["lemma"]
+
+
+async def test_stale_pack_keyboard_is_inert(fake_bot, session_factory, settings):
+    """A superseded pack's keyboard must not drive the new pack's state."""
+    llm = FakeLLM(topic_results=[RESTAURANT_WORDS, RESTAURANT_WORDS])
+    state = make_state(fake_bot)
+    await cmd_topic(
+        make_message("/topic ресторан", bot=fake_bot),
+        command_obj("ресторан"),
+        state,
+        session_factory,
+        llm,
+        settings,
+    )
+    old_mid = (await state.get_data())["message_id"]
+    await cmd_topic(
+        make_message("/topic voyage", bot=fake_bot),
+        command_obj("voyage"),
+        state,
+        session_factory,
+        llm,
+        settings,
+    )
+    # Tap the OLD keyboard: toggle must not change the new selection,
+    # cancel must not kill the new pack's state.
+    stale = make_callback_query(
+        "topic:toggle:0",
+        bot=fake_bot,
+        message=make_message("old", bot=fake_bot, message_id=old_mid),
+    )
+    await on_toggle(stale, state)
+    assert (await state.get_data())["selected"] == [0, 1, 2]
+
+    stale_cancel = make_callback_query(
+        "topic:cancel", bot=fake_bot, message=make_message("old", bot=fake_bot, message_id=old_mid)
+    )
+    await on_cancel(stale_cancel, state)
+    assert await state.get_state() == TopicStates.selecting.state
+
+
+async def test_voice_while_choosing_asks_for_text(fake_bot):
+    from frbot.bot.handlers.topic import on_voice_while_choosing
+    from tests.fakes import make_voice_message
+
+    await on_voice_while_choosing(make_voice_message(bot=fake_bot))
+    assert "текстом" in fake_bot.session.sent_messages[-1].text

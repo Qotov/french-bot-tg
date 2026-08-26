@@ -146,7 +146,8 @@ async def handle_voice_answer(
     if not answer_text:
         await message.answer("🤔 Не расслышал ответа — скажи ещё раз или напиши текстом.")
         return
-    await message.answer(f"🎙 <i>{render.esc(answer_text)}</i>")
+    shown = answer_text if len(answer_text) <= 1000 else answer_text[:1000] + "…"
+    await message.answer(f"🎙 <i>{render.esc(shown)}</i>")
     await process_answer(message, answer_text, state, session_factory, llm, srs, settings)
 
 

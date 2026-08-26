@@ -40,8 +40,12 @@ async def capture_one(
     llm: LLMClient,
     srs: SrsScheduler,
     settings: Settings,
-) -> None:
-    """The capture pipeline for one word/phrase: dedupe, enrich, save, preview."""
+) -> bool:
+    """The capture pipeline for one word/phrase: dedupe, enrich, save, preview.
+
+    Returns False when the LLM failed (callers processing several words should
+    stop instead of retrying the whole backoff ladder per word).
+    """
     # Cheap pre-check: the raw input may already be a stored lemma.
     async with session_factory() as session:
         existing = await repo.find_card_by_lemma(session, raw)
@@ -50,14 +54,14 @@ async def capture_one(
             render.card_preview(existing, existing=True),
             reply_markup=card_preview_kb(existing.id),
         )
-        return
+        return True
 
     try:
         enrichment = await llm.enrich(raw, model=settings.model_fast)
     except LLMError:
         logger.exception("enrichment failed for %r", raw)
         await message.answer(FAIL_TEXT)
-        return
+        return False
 
     async with session_factory() as session:
         existing = await repo.find_card_by_lemma(session, enrichment.lemma)
@@ -66,7 +70,7 @@ async def capture_one(
                 render.card_preview(existing, existing=True),
                 reply_markup=card_preview_kb(existing.id),
             )
-            return
+            return True
         card = await repo.create_vocab_card(
             session, srs, text=raw, enrichment=enrichment.model_dump()
         )
@@ -75,6 +79,7 @@ async def capture_one(
 
     logger.info("captured card %d: %s", card_id, enrichment.lemma)
     await message.answer(render.card_preview(card), reply_markup=card_preview_kb(card_id))
+    return True
 
 
 async def handle_capture(
@@ -124,8 +129,22 @@ async def handle_voice_capture(
         await message.answer(VOICE_NO_WORDS_TEXT)
         return
     logger.info("voice capture: %d words", len(extracted.words))
-    for word in extracted.words:
-        await capture_one(message, word.strip(), session_factory, llm, srs, settings)
+    for index, word in enumerate(extracted.words):
+        word = word.strip()
+        if len(word) > CAPTURE_MAX_LEN:
+            # The extractor returned a whole utterance, not a word/phrase.
+            await message.answer(
+                f"«{render.esc(word[:60])}…» — слишком длинно для карточки, пропускаю."
+            )
+            continue
+        ok = await capture_one(message, word, session_factory, llm, srs, settings)
+        if not ok:
+            remaining = len(extracted.words) - index - 1
+            if remaining:
+                await message.answer(
+                    f"Оставшиеся {remaining} слов(а) не добавлены — пришли их позже."
+                )
+            break
 
 
 async def on_delete(query: CallbackQuery, session_factory: SessionFactory) -> None:
