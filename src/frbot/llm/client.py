@@ -26,6 +26,9 @@ TEMPERATURE_ENRICH = 0.2
 TEMPERATURE_DRILL = 0.2
 TEMPERATURE_CORRECTION = 0.0
 DEFAULT_BACKOFF: Sequence[float] = (1.0, 2.0, 4.0)
+# The SDK default is 600s per attempt; while an LLM call runs, the per-user
+# isolation lock is held, so keep attempts short.
+REQUEST_TIMEOUT = 30.0
 
 
 class LLMError(Exception):
@@ -45,7 +48,9 @@ class LLMClient:
         backoff: Sequence[float] = DEFAULT_BACKOFF,
     ) -> None:
         # The SDK's own retries are disabled; retry policy lives here.
-        self._client = client or AsyncAnthropic(api_key=api_key, max_retries=0)
+        self._client = client or AsyncAnthropic(
+            api_key=api_key, max_retries=0, timeout=REQUEST_TIMEOUT
+        )
         self._backoff = backoff
 
     # -- public API ----------------------------------------------------------

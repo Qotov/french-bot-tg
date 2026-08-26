@@ -8,6 +8,7 @@ via reschedule_daily_job.
 import asyncio
 import logging
 import sqlite3
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
@@ -38,8 +39,10 @@ REMINDER_JOB_ID = "daily_reminder"
 WRITING_JOB_ID = "daily_writing"
 WEEKLY_JOB_ID = "weekly_stats"
 BACKUP_JOB_ID = "daily_backup"
+CLEANUP_JOB_ID = "daily_cleanup"
 BACKUP_KEEP = 14
 BACKUP_TIME = "03:00"
+CLEANUP_TIME = "04:00"
 
 
 def create_scheduler(tz: str) -> AsyncIOScheduler:
@@ -74,18 +77,18 @@ async def send_reminder(bot: Bot, session_factory: SessionFactory, settings: Set
         return
     now = datetime.now(UTC)
     async with session_factory() as session:
-        # "Due today" = everything scheduled up to the end of the local day,
-        # matching the wording of the message and /stats.
-        due = await repo.count_due(session, until=day_end_utc(now, settings.tz))
+        # Count what the Start-review button will actually serve (due <= now),
+        # so the number and the queue behind the button always agree.
+        due = await repo.count_due(session, until=now)
     logger.info("reminder job: %d due", due)
     if due > 0:
         await bot.send_message(
             chat_id,
-            f"⏰ Сегодня к повторению: <b>{due}</b>",
+            f"⏰ К повторению: <b>{due}</b>",
             reply_markup=start_review_kb(),
         )
     else:
-        await bot.send_message(chat_id, "⏰ Сегодня нечего повторять 🎉")
+        await bot.send_message(chat_id, "⏰ Сейчас нечего повторять 🎉")
 
 
 async def send_writing_prompt(
@@ -97,25 +100,52 @@ async def send_writing_prompt(
     chat_id = await _stored_chat_id(session_factory)
     if chat_id is None:
         return
-    state = FSMContext(
-        storage=dispatcher.storage,
-        key=StorageKey(bot_id=bot.id, chat_id=chat_id, user_id=chat_id),
-    )
-    current = await state.get_state()
-    if current is not None:
-        # Don't stomp an in-progress review/drill/settings/write session.
-        logger.info("writing prompt job skipped: user is in state %s", current)
-        await bot.send_message(
-            chat_id,
-            "⏰ Время письма! Заверши текущую сессию и набери /write.",
-        )
-        return
+    key = StorageKey(bot_id=bot.id, chat_id=chat_id, user_id=chat_id)
+    state = FSMContext(storage=dispatcher.storage, key=key)
 
-    async def answer(text: str, **kwargs: object) -> object:
-        return await bot.send_message(chat_id, text, **kwargs)
+    # Serialize with the user's handlers (same per-user isolation lock the
+    # dispatcher uses), so the state check and start_writing are atomic.
+    isolation = getattr(getattr(dispatcher, "fsm", None), "events_isolation", None)
+    lock = isolation.lock(key) if isolation is not None else nullcontext()
 
-    logger.info("writing prompt job fired")
-    await start_writing(answer, state, session_factory, settings)
+    async with lock:
+        current = await state.get_state()
+        if current is not None:
+            # Don't stomp an in-progress review/drill/settings/write session.
+            logger.info("writing prompt job skipped: user is in state %s", current)
+            await bot.send_message(
+                chat_id,
+                "⏰ Время письма! Заверши текущую сессию и набери /write.",
+            )
+            return
+
+        async def answer(text: str, **kwargs: object) -> object:
+            return await bot.send_message(chat_id, text, **kwargs)
+
+        logger.info("writing prompt job fired")
+        await start_writing(answer, state, session_factory, settings)
+
+
+async def cleanup_stray_fsm_entries(dispatcher: HasStorage, allowed_user_id: int) -> None:
+    """Every update from a non-whitelisted user leaves a per-user lock (and
+    possibly a storage record) behind before the whitelist drops it; prune
+    them daily so a public bot username can't slowly grow memory.
+    """
+    removed = 0
+    storage_dict = getattr(dispatcher.storage, "storage", None)
+    if isinstance(storage_dict, dict):
+        for key in list(storage_dict):
+            if getattr(key, "user_id", allowed_user_id) != allowed_user_id:
+                del storage_dict[key]
+                removed += 1
+    isolation = getattr(getattr(dispatcher, "fsm", None), "events_isolation", None)
+    locks = getattr(isolation, "_locks", None)
+    if isinstance(locks, dict):
+        for key in list(locks):
+            if getattr(key, "user_id", allowed_user_id) != allowed_user_id:
+                del locks[key]
+                removed += 1
+    logger.info("fsm cleanup: %d stray entries removed", removed)
 
 
 async def send_weekly_summary(
@@ -215,6 +245,13 @@ async def setup_jobs(
         _daily(BACKUP_TIME, settings.tz),
         id=BACKUP_JOB_ID,
         args=[settings],
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        cleanup_stray_fsm_entries,
+        _daily(CLEANUP_TIME, settings.tz),
+        id=CLEANUP_JOB_ID,
+        args=[dispatcher, settings.allowed_user_id],
         replace_existing=True,
     )
     logger.info(

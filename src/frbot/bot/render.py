@@ -102,15 +102,36 @@ def error_card_back(card: Card) -> str:
     return "\n".join(lines)
 
 
-MAX_ERRORS_SHOWN = 8  # keeps the correction reply safely under Telegram's 4096-char limit
+MAX_ERRORS_SHOWN = 8
+CORRECTED_TEXT_MAX = 3000
+MESSAGE_BUDGET = 4000  # hard guard under Telegram's 4096-char message limit
+
+
+def _fit_lines(lines: list[str], budget: int = MESSAGE_BUDGET) -> str:
+    """Join lines, dropping the tail once the budget is reached.
+
+    Every line is tag-balanced, so dropping whole lines keeps the HTML valid.
+    """
+    out: list[str] = []
+    total = 0
+    for line in lines:
+        if total + len(line) + 1 > budget:
+            out.append("…")
+            break
+        out.append(line)
+        total += len(line) + 1
+    return "\n".join(out)
 
 
 def correction_message(correction, created_cards: int) -> str:
     """Corrected text, numbered error list with RU explanations, comment."""
+    corrected = correction.corrected_text
+    if len(corrected) > CORRECTED_TEXT_MAX:
+        corrected = corrected[:CORRECTED_TEXT_MAX] + "…"
     lines = []
     if correction.errors:
         lines.append("📝 <b>Исправлено:</b>")
-        lines.append(f"<i>{esc(correction.corrected_text)}</i>")
+        lines.append(f"<i>{esc(corrected)}</i>")
         lines.append("")
         lines.append("Ошибки:")
         for i, error in enumerate(correction.errors[:MAX_ERRORS_SHOWN], start=1):
@@ -121,13 +142,13 @@ def correction_message(correction, created_cards: int) -> str:
             lines.append(f"… и ещё {hidden}.")
     else:
         lines.append("🎉 Отлично, ошибок нет!")
-        lines.append(f"<i>{esc(correction.corrected_text)}</i>")
+        lines.append(f"<i>{esc(corrected)}</i>")
     if correction.comment_ru:
         lines.append("")
         lines.append(f"💬 {esc(correction.comment_ru)}")
     if created_cards:
         lines.append(f"➕ Новых карточек из ошибок: {created_cards}")
-    return "\n".join(lines)
+    return _fit_lines(lines)
 
 
 def stats_message(stats) -> str:

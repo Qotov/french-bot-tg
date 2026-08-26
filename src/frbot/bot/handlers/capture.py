@@ -8,7 +8,7 @@ from aiogram.types import CallbackQuery, Message
 
 from frbot.bot import render
 from frbot.bot.keyboards import card_preview_kb
-from frbot.bot.telegram_utils import safe_edit_text
+from frbot.bot.telegram_utils import safe_answer, safe_edit_text
 from frbot.config import Settings
 from frbot.db import repo
 from frbot.db.models import Card, CardKind
@@ -108,7 +108,7 @@ async def on_regenerate(
         await query.answer("Карточка не найдена.", show_alert=True)
         return
 
-    await query.answer("Генерирую заново…")
+    await safe_answer(query, "Генерирую заново…")
     try:
         enrichment = await llm.enrich(card.text, model=settings.model_fast)
     except LLMError:
@@ -121,18 +121,24 @@ async def on_regenerate(
         card = await repo.get_card(session, card_id)
         if card is None:
             return
-        card.enrichment = enrichment.model_dump()
         new_lemma = enrichment.lemma.strip().lower()
         other = await repo.find_card_by_lemma(session, new_lemma)
-        if other is None or other.id == card_id:
-            card.lemma = new_lemma
-        else:
+        if other is not None and other.id != card_id:
+            # Overwriting would duplicate the other card's content while this
+            # card keeps its own dedupe key; leave the card untouched.
             logger.info(
-                "regen kept old lemma for card %d: %r already belongs to card %d",
+                "regen rejected for card %d: lemma %r belongs to card %d",
                 card_id,
                 new_lemma,
                 other.id,
             )
+            if isinstance(query.message, Message):
+                await query.message.answer(
+                    f"⚠️ Получается дубликат карточки «{render.esc(new_lemma)}» — оставил как было."
+                )
+            return
+        card.enrichment = enrichment.model_dump()
+        card.lemma = new_lemma
         await session.commit()
 
     if isinstance(query.message, Message):

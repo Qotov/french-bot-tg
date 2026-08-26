@@ -16,7 +16,7 @@ from aiogram.types import CallbackQuery, Message
 
 from frbot.bot import render
 from frbot.bot.keyboards import grade_kb, show_answer_kb
-from frbot.bot.telegram_utils import safe_clear_markup, safe_edit_text
+from frbot.bot.telegram_utils import safe_answer, safe_clear_markup, safe_edit_text
 from frbot.config import Settings
 from frbot.db import repo
 from frbot.db.session import SessionFactory
@@ -97,7 +97,7 @@ async def on_start_callback(
     session_factory: SessionFactory,
     settings: Settings,
 ) -> None:
-    await query.answer()
+    await safe_answer(query)
     if isinstance(query.message, Message):
         await start_session(query.message.answer, state, session_factory, settings)
 
