@@ -8,12 +8,18 @@ Full spec: [docs/TASK.md](docs/TASK.md).
 
 ## Features
 
-- **Capture** — send any French word or phrase; it becomes a structured card
-  (lemma, IPA, definition, RU/EN translation, examples, collocations) via the
-  Gemini API in a few seconds.
+- **Capture** — send any French word or phrase (typed or as a **voice note**);
+  it becomes a structured card (lemma, IPA, definition, RU/EN translation,
+  examples, collocations) via the Gemini API in a few seconds.
 - **/review** — daily spaced-repetition sessions scheduled with FSRS-6.
-- **/write** — one short daily writing prompt; corrections come back with
-  per-error explanations in Russian, and each error becomes a new card.
+- **/write** — one short daily writing prompt; answer by text **or voice**;
+  corrections come back with per-error explanations in Russian, and each error
+  becomes a new card.
+- **/talk** — free conversation with the tutor (text or voice): the bot
+  replies in French and corrects your mistakes in parallel; mistakes become
+  cards. End with /stop.
+- **/topic** — generate a pack of B2-level words on any topic
+  (`/topic ресторан 10`), pick the ones you want, and they become cards.
 - **/drill** — weekly grammar topic with 5 cloze exercises; wrong answers
   become cards.
 - **/stats** — due counts, review accuracy, top error types.
@@ -41,8 +47,8 @@ uv run python -m frbot
 | `ALLOWED_USER_ID` | your numeric Telegram user id (the only whitelisted user) | required |
 | `TZ` | display/job timezone | `Europe/Paris` |
 | `DB_URL` | SQLAlchemy async URL | `sqlite+aiosqlite:///data/frbot.db` |
-| `MODEL_FAST` | model for enrichment + cloze | `gemini-3.5-flash-lite` |
-| `MODEL_SMART` | model for writing correction | `gemini-3.5-flash-lite` |
+| `MODEL_FAST` | model for enrichment, cloze, topic packs, voice transcription | `gemini-3.5-flash-lite` |
+| `MODEL_SMART` | model for writing correction and /talk conversation | `gemini-3.5-flash-lite` |
 | `DAILY_NEW_LIMIT` | max new cards introduced per day | `15` |
 | `SESSION_MAX` | max cards per review session | `30` |
 | `REMINDER_TIME` | daily due-count reminder (HH:MM, local TZ) | `08:30` |

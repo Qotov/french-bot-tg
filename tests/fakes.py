@@ -16,7 +16,7 @@ from aiogram.client.session.base import BaseSession
 from aiogram.enums import ParseMode
 from aiogram.methods import TelegramMethod
 from aiogram.methods.base import TelegramType
-from aiogram.types import CallbackQuery, Chat, Message, Update, User
+from aiogram.types import CallbackQuery, Chat, File, Message, Update, User, Voice
 
 ALLOWED_USER_ID = 111_111
 OTHER_USER_ID = 999_999
@@ -60,7 +60,7 @@ class RecordingSession(BaseSession):
         chunk_size: int = 65536,
         raise_for_status: bool = True,
     ) -> AsyncGenerator[bytes]:
-        yield b""
+        yield b"fake-audio-bytes"
 
     def _result_for(self, method: TelegramMethod[Any]) -> Any:
         name = type(method).__name__
@@ -72,6 +72,13 @@ class RecordingSession(BaseSession):
                 date=datetime.now(UTC),
                 chat=Chat.model_construct(id=int(chat_id), type="private"),
                 text=getattr(method, "text", None),
+            )
+        if name == "GetFile":
+            return File(
+                file_id=method.file_id,
+                file_unique_id=f"unique-{method.file_id}",
+                file_size=1024,
+                file_path="voice/test.ogg",
             )
         return True
 
@@ -109,6 +116,29 @@ def make_message(
         chat=Chat(id=user_id, type="private"),
         from_user=make_user(user_id),
         text=text,
+    )
+    if bot is not None:
+        message = message.as_(bot)
+    return message
+
+
+def make_voice_message(
+    duration: int = 5,
+    user_id: int = ALLOWED_USER_ID,
+    bot: Bot | None = None,
+    message_id: int = 2,
+) -> Message:
+    message = Message(
+        message_id=message_id,
+        date=datetime.now(UTC),
+        chat=Chat(id=user_id, type="private"),
+        from_user=make_user(user_id),
+        voice=Voice(
+            file_id="voice-file-1",
+            file_unique_id="voice-unique-1",
+            duration=duration,
+            mime_type="audio/ogg",
+        ),
     )
     if bot is not None:
         message = message.as_(bot)
@@ -200,13 +230,25 @@ class FakeLLM:
         enrich_results: list[Any] | None = None,
         correct_results: list[Any] | None = None,
         cloze_results: list[Any] | None = None,
+        topic_results: list[Any] | None = None,
+        voice_words_results: list[Any] | None = None,
+        transcribe_results: list[Any] | None = None,
+        talk_results: list[Any] | None = None,
     ) -> None:
         self.enrich_results = enrich_results or []
         self.correct_results = correct_results or []
         self.cloze_results = cloze_results or []
+        self.topic_results = topic_results or []
+        self.voice_words_results = voice_words_results or []
+        self.transcribe_results = transcribe_results or []
+        self.talk_results = talk_results or []
         self.enrich_calls: list[str] = []
         self.correct_calls: list[tuple[str, str]] = []
         self.cloze_calls: list[tuple[str, list[str]]] = []
+        self.topic_calls: list[tuple[str, int, list[str]]] = []
+        self.voice_words_calls: list[str] = []
+        self.transcribe_calls: list[str] = []
+        self.talk_calls: list[dict[str, Any]] = []
 
     @staticmethod
     def _next(queue: list[Any]) -> Any:
@@ -226,6 +268,35 @@ class FakeLLM:
     async def cloze(self, topic: str, lemmas: Any, *, model: str) -> Any:
         self.cloze_calls.append((topic, list(lemmas)))
         return self._next(self.cloze_results)
+
+    async def topic_words(self, topic: str, count: int, known_lemmas: Any, *, model: str) -> Any:
+        self.topic_calls.append((topic, count, list(known_lemmas)))
+        return self._next(self.topic_results)
+
+    async def extract_voice_words(self, audio: bytes, mime_type: str, *, model: str) -> Any:
+        self.voice_words_calls.append(mime_type)
+        return self._next(self.voice_words_results)
+
+    async def transcribe(self, audio: bytes, mime_type: str, *, model: str) -> Any:
+        self.transcribe_calls.append(mime_type)
+        return self._next(self.transcribe_results)
+
+    async def talk_open(self, lemmas: Any, *, model: str) -> Any:
+        self.talk_calls.append({"kind": "open", "lemmas": list(lemmas)})
+        return self._next(self.talk_results)
+
+    async def talk_turn(
+        self,
+        history: str,
+        *,
+        model: str,
+        text: str | None = None,
+        audio: tuple[bytes, str] | None = None,
+    ) -> Any:
+        self.talk_calls.append(
+            {"kind": "turn", "history": history, "text": text, "audio": audio is not None}
+        )
+        return self._next(self.talk_results)
 
 
 def text_response(text: str, input_tokens: int = 100, output_tokens: int = 200) -> Any:

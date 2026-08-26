@@ -107,7 +107,7 @@ CORRECTED_TEXT_MAX = 3000
 MESSAGE_BUDGET = 4000  # hard guard under Telegram's 4096-char message limit
 
 
-def _fit_lines(lines: list[str], budget: int = MESSAGE_BUDGET) -> str:
+def fit_lines(lines: list[str], budget: int = MESSAGE_BUDGET) -> str:
     """Join lines, dropping the tail once the budget is reached.
 
     Every line is tag-balanced, so dropping whole lines keeps the HTML valid.
@@ -148,7 +148,7 @@ def correction_message(correction, created_cards: int) -> str:
         lines.append(f"💬 {esc(correction.comment_ru)}")
     if created_cards:
         lines.append(f"➕ Новых карточек из ошибок: {created_cards}")
-    return _fit_lines(lines)
+    return fit_lines(lines)
 
 
 def stats_message(stats) -> str:

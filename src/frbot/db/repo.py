@@ -72,6 +72,24 @@ async def add_card(session: AsyncSession, card: Card) -> Card:
     return card
 
 
+async def create_vocab_card(
+    session: AsyncSession, srs: SrsScheduler, *, text: str, enrichment: dict
+) -> Card:
+    new = srs.new_card()
+    card = Card(
+        text=text,
+        lemma=str(enrichment["lemma"]).strip().lower(),
+        kind=CardKind.vocab.value,
+        enrichment=enrichment,
+        fsrs=new.fsrs,
+        due=new.due,
+        state=new.state,
+    )
+    session.add(card)
+    await session.flush()
+    return card
+
+
 async def delete_card(session: AsyncSession, card_id: int) -> bool:
     card = await session.get(Card, card_id)
     if card is None:

@@ -19,7 +19,15 @@ from google.genai import types as genai_types
 from pydantic import BaseModel, ValidationError
 
 from frbot.llm import prompts
-from frbot.llm.schemas import ClozeSet, Enrichment, WritingCorrection
+from frbot.llm.schemas import (
+    ClozeSet,
+    Enrichment,
+    TalkTurn,
+    TopicWordList,
+    Transcript,
+    VoiceWords,
+    WritingCorrection,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +35,7 @@ MAX_TOKENS = 1500
 TEMPERATURE_ENRICH = 0.2
 TEMPERATURE_DRILL = 0.2
 TEMPERATURE_CORRECTION = 0.0
+TEMPERATURE_TALK = 0.7  # conversation should not be robotic
 DEFAULT_BACKOFF: Sequence[float] = (1.0, 2.0, 4.0)
 # While an LLM call runs, the per-user isolation lock is held, so keep
 # attempts short. google-genai HttpOptions.timeout is in milliseconds.
@@ -62,7 +71,7 @@ class LLMClient:
         return await self.complete_json(
             model=model,
             system=prompts.ENRICH_SYSTEM,
-            prompt=prompts.ENRICH_USER.format(text=text),
+            contents=prompts.ENRICH_USER.format(text=text),
             schema=Enrichment,
             temperature=TEMPERATURE_ENRICH,
         )
@@ -71,7 +80,7 @@ class LLMClient:
         return await self.complete_json(
             model=model,
             system=prompts.CORRECTION_SYSTEM,
-            prompt=prompts.CORRECTION_USER.format(prompt=prompt, answer=answer),
+            contents=prompts.CORRECTION_USER.format(prompt=prompt, answer=answer),
             schema=WritingCorrection,
             temperature=TEMPERATURE_CORRECTION,
         )
@@ -81,9 +90,74 @@ class LLMClient:
         return await self.complete_json(
             model=model,
             system=prompts.CLOZE_SYSTEM,
-            prompt=prompts.CLOZE_USER.format(topic=topic, lemmas=lemma_list),
+            contents=prompts.CLOZE_USER.format(topic=topic, lemmas=lemma_list),
             schema=ClozeSet,
             temperature=TEMPERATURE_DRILL,
+        )
+
+    async def topic_words(
+        self, topic: str, count: int, known_lemmas: Sequence[str], *, model: str
+    ) -> TopicWordList:
+        known = ", ".join(known_lemmas) if known_lemmas else "(nothing yet)"
+        return await self.complete_json(
+            model=model,
+            system=prompts.TOPIC_SYSTEM,
+            contents=prompts.TOPIC_USER.format(topic=topic, count=count, known=known),
+            schema=TopicWordList,
+            temperature=TEMPERATURE_ENRICH,
+        )
+
+    async def extract_voice_words(self, audio: bytes, mime_type: str, *, model: str) -> VoiceWords:
+        return await self.complete_json(
+            model=model,
+            system=prompts.VOICE_CAPTURE_SYSTEM,
+            contents=[_audio_part(audio, mime_type), prompts.VOICE_CAPTURE_USER],
+            schema=VoiceWords,
+            temperature=TEMPERATURE_ENRICH,
+        )
+
+    async def transcribe(self, audio: bytes, mime_type: str, *, model: str) -> Transcript:
+        return await self.complete_json(
+            model=model,
+            system=prompts.TRANSCRIBE_SYSTEM,
+            contents=[_audio_part(audio, mime_type), prompts.TRANSCRIBE_USER],
+            schema=Transcript,
+            temperature=TEMPERATURE_CORRECTION,
+        )
+
+    async def talk_open(self, lemmas: Sequence[str], *, model: str) -> TalkTurn:
+        lemma_list = ", ".join(lemmas) if lemmas else "(none yet)"
+        return await self.complete_json(
+            model=model,
+            system=prompts.TALK_SYSTEM,
+            contents=prompts.TALK_OPENER_USER.format(lemmas=lemma_list),
+            schema=TalkTurn,
+            temperature=TEMPERATURE_TALK,
+        )
+
+    async def talk_turn(
+        self,
+        history: str,
+        *,
+        model: str,
+        text: str | None = None,
+        audio: tuple[bytes, str] | None = None,
+    ) -> TalkTurn:
+        if (text is None) == (audio is None):
+            raise ValueError("talk_turn needs exactly one of text or audio")
+        preamble = prompts.TALK_TURN_USER.format(history=history or "(beginning)")
+        contents: str | list[Any]
+        if text is not None:
+            contents = f"{preamble}\n\nLearner (text): {text}"
+        else:
+            data, mime_type = audio
+            contents = [preamble, _audio_part(data, mime_type)]
+        return await self.complete_json(
+            model=model,
+            system=prompts.TALK_SYSTEM,
+            contents=contents,
+            schema=TalkTurn,
+            temperature=TEMPERATURE_TALK,
         )
 
     # -- core ----------------------------------------------------------------
@@ -93,28 +167,34 @@ class LLMClient:
         *,
         model: str,
         system: str,
-        prompt: str,
+        contents: str | list[Any],
         schema: type[T],
         temperature: float,
     ) -> T:
-        text = await self._call(model, system, prompt, temperature)
+        text = await self._call(model, system, contents, temperature)
         try:
             return _parse(text, schema)
         except (json.JSONDecodeError, ValidationError) as exc:
             logger.warning("llm output invalid for %s, retrying once: %s", schema.__name__, exc)
-            retry_prompt = (
-                f"{prompt}\n\n"
+            retry_note = (
                 f"Your previous response was invalid:\n{exc}\n\n"
                 f"Return only the corrected JSON object."
             )
-            text = await self._call(model, system, retry_prompt, temperature)
+            retry_contents: str | list[Any]
+            if isinstance(contents, str):
+                retry_contents = f"{contents}\n\n{retry_note}"
+            else:
+                retry_contents = [*contents, retry_note]
+            text = await self._call(model, system, retry_contents, temperature)
             try:
                 return _parse(text, schema)
             except (json.JSONDecodeError, ValidationError) as exc2:
                 logger.error("llm output invalid twice for %s: %s", schema.__name__, exc2)
                 raise LLMOutputError(f"invalid {schema.__name__} output") from exc2
 
-    async def _call(self, model: str, system: str, prompt: str, temperature: float) -> str:
+    async def _call(
+        self, model: str, system: str, contents: str | list[Any], temperature: float
+    ) -> str:
         last_exc: Exception | None = None
         for attempt in range(len(self._backoff) + 1):
             if attempt > 0:
@@ -122,7 +202,7 @@ class LLMClient:
             try:
                 response = await self._client.aio.models.generate_content(
                     model=model,
-                    contents=prompt,
+                    contents=contents,
                     config=genai_types.GenerateContentConfig(
                         system_instruction=system,
                         temperature=temperature,
@@ -152,6 +232,10 @@ class LLMClient:
             return response.text or ""
         logger.error("llm call failed after %d attempts", len(self._backoff) + 1)
         raise LLMError("Gemini API unavailable") from last_exc
+
+
+def _audio_part(data: bytes, mime_type: str) -> genai_types.Part:
+    return genai_types.Part.from_bytes(data=data, mime_type=mime_type)
 
 
 def _parse[T: BaseModel](text: str, schema: type[T]) -> T:

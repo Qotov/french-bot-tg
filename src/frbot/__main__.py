@@ -11,7 +11,7 @@ from aiogram.fsm.storage.memory import MemoryStorage, SimpleEventIsolation
 from aiogram.types import BotCommand
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from frbot.bot.handlers import capture, drill, review, stats, system, write
+from frbot.bot.handlers import capture, drill, review, stats, system, talk, topic, write
 from frbot.bot.handlers import settings as settings_handlers
 from frbot.bot.middleware import WhitelistMiddleware
 from frbot.config import Settings
@@ -42,7 +42,9 @@ def build_dispatcher(
     dp.include_router(write.create_router())
     dp.include_router(drill.create_router())
     dp.include_router(settings_handlers.create_router())
-    dp.include_router(capture.create_router())
+    dp.include_router(talk.create_router())
+    dp.include_router(topic.create_router())
+    dp.include_router(capture.create_router())  # must stay last: catch-all text/voice
     dp["settings"] = settings
     dp["session_factory"] = session_factory
     dp["llm"] = llm or LLMClient(settings.gemini_api_key)
@@ -60,9 +62,12 @@ def build_bot(settings: Settings) -> Bot:
 BOT_COMMANDS = [
     BotCommand(command="review", description="Повторение карточек"),
     BotCommand(command="write", description="Письменное задание"),
+    BotCommand(command="talk", description="Диалог с исправлениями"),
+    BotCommand(command="topic", description="Подборка слов по теме"),
     BotCommand(command="drill", description="Грамматика недели"),
     BotCommand(command="stats", description="Статистика"),
     BotCommand(command="settings", description="Настройки"),
+    BotCommand(command="stop", description="Завершить диалог"),
     BotCommand(command="help", description="Справка"),
 ]
 
