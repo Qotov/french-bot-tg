@@ -7,7 +7,7 @@ via reschedule_daily_job.
 
 import asyncio
 import logging
-import shutil
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
@@ -46,14 +46,17 @@ def create_scheduler(tz: str) -> AsyncIOScheduler:
     return AsyncIOScheduler(timezone=ZoneInfo(tz))
 
 
-def _daily(hh_mm: str) -> CronTrigger:
+def _daily(hh_mm: str, tz: str) -> CronTrigger:
+    # APScheduler 3 applies the scheduler timezone only to triggers given as
+    # strings; a CronTrigger instance without an explicit timezone falls back
+    # to the host OS timezone. Always pass the configured tz explicitly.
     hour, minute = hh_mm.split(":")
-    return CronTrigger(hour=int(hour), minute=int(minute))
+    return CronTrigger(hour=int(hour), minute=int(minute), timezone=ZoneInfo(tz))
 
 
-def reschedule_daily_job(scheduler: AsyncIOScheduler, job_id: str, hh_mm: str) -> None:
-    scheduler.reschedule_job(job_id, trigger=_daily(hh_mm))
-    logger.info("job %s rescheduled to %s", job_id, hh_mm)
+def reschedule_daily_job(scheduler: AsyncIOScheduler, job_id: str, hh_mm: str, tz: str) -> None:
+    scheduler.reschedule_job(job_id, trigger=_daily(hh_mm, tz))
+    logger.info("job %s rescheduled to %s (%s)", job_id, hh_mm, tz)
 
 
 async def _stored_chat_id(session_factory: SessionFactory) -> int | None:
@@ -65,13 +68,15 @@ async def _stored_chat_id(session_factory: SessionFactory) -> int | None:
     return int(raw)
 
 
-async def send_reminder(bot: Bot, session_factory: SessionFactory) -> None:
+async def send_reminder(bot: Bot, session_factory: SessionFactory, settings: Settings) -> None:
     chat_id = await _stored_chat_id(session_factory)
     if chat_id is None:
         return
     now = datetime.now(UTC)
     async with session_factory() as session:
-        due = await repo.count_due(session, until=now)
+        # "Due today" = everything scheduled up to the end of the local day,
+        # matching the wording of the message and /stats.
+        due = await repo.count_due(session, until=day_end_utc(now, settings.tz))
     logger.info("reminder job: %d due", due)
     if due > 0:
         await bot.send_message(
@@ -96,6 +101,15 @@ async def send_writing_prompt(
         storage=dispatcher.storage,
         key=StorageKey(bot_id=bot.id, chat_id=chat_id, user_id=chat_id),
     )
+    current = await state.get_state()
+    if current is not None:
+        # Don't stomp an in-progress review/drill/settings/write session.
+        logger.info("writing prompt job skipped: user is in state %s", current)
+        await bot.send_message(
+            chat_id,
+            "⏰ Время письма! Заверши текущую сессию и набери /write.",
+        )
+        return
 
     async def answer(text: str, **kwargs: object) -> object:
         return await bot.send_message(chat_id, text, **kwargs)
@@ -138,7 +152,9 @@ def _copy_and_prune(src: Path, today: str) -> tuple[Path | None, int]:
     backups_dir = src.parent / "backups"
     backups_dir.mkdir(parents=True, exist_ok=True)
     dst = backups_dir / f"frbot-{today}.db"
-    shutil.copy2(src, dst)
+    # SQLite online-backup API: consistent even while the bot is writing.
+    with sqlite3.connect(src) as source, sqlite3.connect(dst) as target:
+        source.backup(target)
     stale = sorted(backups_dir.glob("frbot-*.db"))[:-BACKUP_KEEP]
     for path in stale:
         path.unlink()
@@ -169,28 +185,28 @@ async def setup_jobs(
         cfg = await repo.get_effective_config(session, settings)
     scheduler.add_job(
         send_reminder,
-        _daily(cfg.reminder_time),
+        _daily(cfg.reminder_time, settings.tz),
         id=REMINDER_JOB_ID,
-        args=[bot, session_factory],
+        args=[bot, session_factory, settings],
         replace_existing=True,
     )
     scheduler.add_job(
         send_writing_prompt,
-        _daily(cfg.writing_time),
+        _daily(cfg.writing_time, settings.tz),
         id=WRITING_JOB_ID,
         args=[bot, dispatcher, session_factory, settings],
         replace_existing=True,
     )
     scheduler.add_job(
         send_weekly_summary,
-        CronTrigger(day_of_week="sun", hour=18, minute=0),
+        CronTrigger(day_of_week="sun", hour=18, minute=0, timezone=ZoneInfo(settings.tz)),
         id=WEEKLY_JOB_ID,
         args=[bot, session_factory, settings],
         replace_existing=True,
     )
     scheduler.add_job(
         backup_database,
-        _daily(BACKUP_TIME),
+        _daily(BACKUP_TIME, settings.tz),
         id=BACKUP_JOB_ID,
         args=[settings],
         replace_existing=True,

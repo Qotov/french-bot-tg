@@ -31,6 +31,7 @@ from frbot.timeutil import day_end_utc, day_start_utc
 logger = logging.getLogger(__name__)
 
 FAIL_TEXT = "⚠️ Не получилось проверить текст. Пришли его ещё раз через минуту."
+ANSWER_MAX_LEN = 1500
 
 WRITING_SITUATIONS = [
     "Raconte ce que tu as fait hier soir.",
@@ -108,6 +109,12 @@ async def handle_answer(
     answer_text = (message.text or "").strip()
     if not answer_text:
         return
+    if len(answer_text) > ANSWER_MAX_LEN:
+        await message.answer(
+            f"Слишком длинно — нужно всего 2–3 предложения (до {ANSWER_MAX_LEN} символов). "
+            f"Сократи и пришли ещё раз."
+        )
+        return
     data = await state.get_data()
     prompt: str = data.get("prompt", "")
 
@@ -143,6 +150,7 @@ async def handle_answer(
                 corrected=error.corrected,
                 err_type=error.type,
                 explanation_ru=error.explanation_ru,
+                front=render.make_gapped(correction.corrected_text, error.corrected),
             )
             if card is not None:
                 created += 1

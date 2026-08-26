@@ -7,7 +7,7 @@ from pathlib import Path
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.storage.memory import MemoryStorage, SimpleEventIsolation
 from aiogram.types import BotCommand
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -31,7 +31,10 @@ def build_dispatcher(
     llm: LLMClient | None = None,
     srs: SrsScheduler | None = None,
 ) -> Dispatcher:
-    dp = Dispatcher(storage=MemoryStorage())
+    # SimpleEventIsolation serializes update handling per chat/user, so a
+    # double-tap on an inline button cannot run two handlers concurrently
+    # (double-graded reviews, duplicate capture cards, ...).
+    dp = Dispatcher(storage=MemoryStorage(), events_isolation=SimpleEventIsolation())
     dp.update.outer_middleware(WhitelistMiddleware(settings.allowed_user_id))
     dp.include_router(system.create_router())
     dp.include_router(review.create_router())

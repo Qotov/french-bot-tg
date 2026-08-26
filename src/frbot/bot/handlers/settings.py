@@ -108,7 +108,7 @@ async def handle_value(
 
     if key in TIME_KEYS and scheduler is not None:
         try:
-            reschedule_daily_job(scheduler, TIME_KEYS[key], value)
+            reschedule_daily_job(scheduler, TIME_KEYS[key], value, settings.tz)
         except Exception:
             logger.exception("failed to reschedule job for %s", key)
 

@@ -59,7 +59,10 @@ async def test_full_session_two_cards(fake_bot, session_factory, settings):
 
     # Show answer for the due card.
     await on_show(
-        make_callback_query(f"review:show:{due_id}", bot=fake_bot), state, session_factory
+        make_callback_query(f"review:show:{due_id}", bot=fake_bot),
+        state,
+        session_factory,
+        settings,
     )
     shown = fake_bot.session.sent("EditMessageText")[-1]
     assert "по мере" in shown.text  # back contains the translation
@@ -80,7 +83,10 @@ async def test_full_session_two_cards(fake_bot, session_factory, settings):
 
     # Show + grade Again on the new card -> summary.
     await on_show(
-        make_callback_query(f"review:show:{new_id}", bot=fake_bot), state, session_factory
+        make_callback_query(f"review:show:{new_id}", bot=fake_bot),
+        state,
+        session_factory,
+        settings,
     )
     await on_grade(
         make_callback_query(f"review:grade:{new_id}:1", bot=fake_bot),

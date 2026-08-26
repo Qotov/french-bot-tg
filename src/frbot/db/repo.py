@@ -226,8 +226,14 @@ async def create_error_card(
     corrected: str,
     err_type: str,
     explanation_ru: str,
+    front: str | None = None,
 ) -> Card | None:
-    """Create an error/drill_error card unless an equal one exists. No cap check here."""
+    """Create an error/drill_error card unless an equal one exists. No cap check here.
+
+    `front` is the pre-gapped sentence shown at review time; computing it at
+    creation time avoids fragile substring replacement later (a short span like
+    "a" occurs inside other words).
+    """
     existing = await find_error_card(session, kind=kind, err_type=err_type, corrected=corrected)
     if existing is not None:
         return None
@@ -241,6 +247,7 @@ async def create_error_card(
             "original": original,
             "corrected": corrected,
             "explanation_ru": explanation_ru,
+            "front": front,
         },
         fsrs=new.fsrs,
         due=new.due,

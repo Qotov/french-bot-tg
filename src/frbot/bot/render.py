@@ -1,6 +1,7 @@
 """Message formatting. All dynamic strings are HTML-escaped; parse mode is HTML."""
 
 import html
+import re
 
 from frbot.db.models import Card, CardKind
 from frbot.llm.schemas import Enrichment
@@ -61,15 +62,30 @@ def vocab_card_back(card: Card) -> str:
     return "\n".join(lines)
 
 
+def make_gapped(text: str, span: str) -> str | None:
+    """Replace the first whole-word occurrence of `span` in `text` with a gap.
+
+    Word boundaries prevent a short span like "a" from matching inside "Marie".
+    Returns None when the span is not found as a whole word.
+    """
+    span = span.strip()
+    if not span:
+        return None
+    pattern = re.compile(rf"(?<!\w){re.escape(span)}(?!\w)", re.IGNORECASE)
+    replaced, count = pattern.subn("___", text, count=1)
+    return replaced if count else None
+
+
 def error_card_front(card: Card) -> str:
     """Front for error/drill_error cards: the sentence with the error span gapped."""
     meta = card.error_meta or {}
-    sentence = card.text
-    corrected_span = meta.get("corrected", "")
-    if corrected_span and corrected_span in sentence:
-        sentence = sentence.replace(corrected_span, "___", 1)
     label = "✍️" if card.kind == CardKind.error.value else "📚"
-    return f"{label} Заполни пропуск:\n<i>{esc(sentence)}</i>"
+    front = meta.get("front") or make_gapped(card.text, meta.get("corrected", ""))
+    if front:
+        return f"{label} Заполни пропуск:\n<i>{esc(front)}</i>"
+    # No reliable gap position: ask to correct the original fragment instead.
+    original = meta.get("original") or card.text
+    return f"{label} Исправь:\n<i>{esc(original)}</i>"
 
 
 def error_card_back(card: Card) -> str:
@@ -86,6 +102,9 @@ def error_card_back(card: Card) -> str:
     return "\n".join(lines)
 
 
+MAX_ERRORS_SHOWN = 8  # keeps the correction reply safely under Telegram's 4096-char limit
+
+
 def correction_message(correction, created_cards: int) -> str:
     """Corrected text, numbered error list with RU explanations, comment."""
     lines = []
@@ -94,9 +113,12 @@ def correction_message(correction, created_cards: int) -> str:
         lines.append(f"<i>{esc(correction.corrected_text)}</i>")
         lines.append("")
         lines.append("Ошибки:")
-        for i, error in enumerate(correction.errors, start=1):
+        for i, error in enumerate(correction.errors[:MAX_ERRORS_SHOWN], start=1):
             lines.append(f"{i}. ❌ {esc(error.original)} → ✅ <b>{esc(error.corrected)}</b>")
             lines.append(f"   💡 {esc(error.explanation_ru)}")
+        hidden = len(correction.errors) - MAX_ERRORS_SHOWN
+        if hidden > 0:
+            lines.append(f"… и ещё {hidden}.")
     else:
         lines.append("🎉 Отлично, ошибок нет!")
         lines.append(f"<i>{esc(correction.corrected_text)}</i>")

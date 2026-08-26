@@ -17,6 +17,7 @@ from aiogram.types import CallbackQuery, Message
 
 from frbot.bot import render
 from frbot.bot.keyboards import drill_options_kb
+from frbot.bot.telegram_utils import safe_edit_text
 from frbot.config import Settings
 from frbot.db import repo
 from frbot.db.models import CardKind
@@ -108,7 +109,9 @@ async def on_answer(
     chosen = item["options"][opt_index]
     correct = item["correct"]
     is_correct = chosen == correct
-    filled = item["sentence_with_gap"].replace("___", f"<b>{render.esc(correct)}</b>", 1)
+    filled = render.esc(item["sentence_with_gap"]).replace(
+        "___", f"<b>{render.esc(correct)}</b>", 1
+    )
 
     lines = [f"<b>{item_index + 1}/{len(items)}</b>", "", filled]
     if is_correct:
@@ -128,13 +131,14 @@ async def on_answer(
                 corrected=correct,
                 err_type=data["topic_slug"],
                 explanation_ru=item["explanation_ru"],
+                front=item["sentence_with_gap"],
             )
             await session.commit()
         if card is not None:
             logger.info("drill error card %d created", card.id)
 
     if isinstance(query.message, Message):
-        await query.message.edit_text("\n".join(lines))
+        await safe_edit_text(query.message, "\n".join(lines))
 
     index = item_index + 1
     await state.update_data(

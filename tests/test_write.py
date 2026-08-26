@@ -165,6 +165,26 @@ async def test_llm_failure_keeps_state_for_retry(fake_bot, session_factory, sett
     assert writing.answer is None
 
 
+async def test_overlong_answer_rejected_without_llm_call(fake_bot, session_factory, settings):
+    from frbot.bot.handlers.write import ANSWER_MAX_LEN
+    from tests.fakes import FakeLLM
+
+    llm = FakeLLM(correct_results=[correction()])
+    state = make_state(fake_bot)
+    await cmd_write(make_message("/write", bot=fake_bot), state, session_factory, settings)
+    await handle_answer(
+        make_message("x" * (ANSWER_MAX_LEN + 1), bot=fake_bot),
+        state,
+        session_factory,
+        llm,
+        srs(),
+        settings,
+    )
+    assert llm.correct_calls == []
+    assert "Слишком длинно" in fake_bot.session.sent_messages[-1].text
+    assert await state.get_state() == WriteStates.awaiting_answer.state
+
+
 async def test_no_errors_congratulates(fake_bot, session_factory, settings):
     from tests.fakes import FakeLLM
 

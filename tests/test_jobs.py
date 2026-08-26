@@ -36,7 +36,7 @@ async def store_chat_id(session_factory) -> None:
         await session.commit()
 
 
-async def test_reminder_sends_due_count_with_button(fake_bot, session_factory):
+async def test_reminder_sends_due_count_with_button(fake_bot, session_factory, settings):
     await store_chat_id(session_factory)
     for i in range(2):
         await add_vocab_card(
@@ -44,7 +44,7 @@ async def test_reminder_sends_due_count_with_button(fake_bot, session_factory):
         )
     await add_vocab_card(session_factory, "nouveau")  # New cards don't count as due
 
-    await send_reminder(fake_bot, session_factory)
+    await send_reminder(fake_bot, session_factory, settings)
     sent = fake_bot.session.sent_messages
     assert len(sent) == 1
     assert sent[0].chat_id == ALLOWED_USER_ID
@@ -52,22 +52,28 @@ async def test_reminder_sends_due_count_with_button(fake_bot, session_factory):
     assert "Start review" in sent[0].reply_markup.inline_keyboard[0][0].text
 
 
-async def test_reminder_without_due_cards_has_no_button(fake_bot, session_factory):
+async def test_reminder_without_due_cards_has_no_button(fake_bot, session_factory, settings):
     await store_chat_id(session_factory)
-    await send_reminder(fake_bot, session_factory)
+    await send_reminder(fake_bot, session_factory, settings)
     sent = fake_bot.session.sent_messages
     assert len(sent) == 1
     assert sent[0].reply_markup is None
 
 
-async def test_reminder_skipped_without_chat_id(fake_bot, session_factory):
-    await send_reminder(fake_bot, session_factory)
+async def test_reminder_skipped_without_chat_id(fake_bot, session_factory, settings):
+    await send_reminder(fake_bot, session_factory, settings)
     assert fake_bot.session.sent_messages == []
 
 
 async def test_backup_copies_and_prunes(tmp_path: Path, settings):
+    import sqlite3
+
     db_file = tmp_path / "frbot.db"
-    db_file.write_bytes(b"sqlite-data")
+    conn = sqlite3.connect(db_file)
+    conn.execute("CREATE TABLE t (x INTEGER)")
+    conn.execute("INSERT INTO t VALUES (42)")
+    conn.commit()
+    conn.close()
     backups = tmp_path / "backups"
     backups.mkdir()
     # 16 pre-existing backups with older dates.
@@ -77,12 +83,13 @@ async def test_backup_copies_and_prunes(tmp_path: Path, settings):
     test_settings = settings.model_copy(update={"db_url": f"sqlite+aiosqlite:///{db_file}"})
     await backup_database(test_settings)
 
-    remaining = sorted(p.name for p in backups.glob("frbot-*.db"))
+    remaining = sorted(backups.glob("frbot-*.db"))
     assert len(remaining) == 14
-    today = datetime.now(UTC).astimezone().date().isoformat()
-    assert any(today[:7] in name for name in remaining)  # today's backup kept
-    # The newest file is today's copy of the DB.
-    assert (backups / f"frbot-{datetime.now(UTC).date().isoformat()}.db").exists() or remaining
+    # The newest backup is a valid sqlite copy of today's DB.
+    newest = remaining[-1]
+    check = sqlite3.connect(newest)
+    assert check.execute("SELECT x FROM t").fetchone() == (42,)
+    check.close()
 
 
 async def test_backup_skips_memory_url(settings):
@@ -103,10 +110,16 @@ async def test_setup_and_reschedule_jobs(fake_bot, session_factory, settings: Se
         assert backup is not None
         assert str(reminder.trigger) == "cron[hour='8', minute='30']"
         assert str(writing.trigger) == "cron[hour='19', minute='0']"
+        # Triggers must carry the configured tz, not the host OS timezone.
+        from zoneinfo import ZoneInfo
 
-        reschedule_daily_job(scheduler, REMINDER_JOB_ID, "10:45")
+        for job in (reminder, writing, backup, scheduler.get_job(WEEKLY_JOB_ID)):
+            assert job.trigger.timezone == ZoneInfo(settings.tz)
+
+        reschedule_daily_job(scheduler, REMINDER_JOB_ID, "10:45", settings.tz)
         reminder = scheduler.get_job(REMINDER_JOB_ID)
         assert str(reminder.trigger) == "cron[hour='10', minute='45']"
+        assert reminder.trigger.timezone == ZoneInfo(settings.tz)
     finally:
         scheduler.shutdown(wait=False)
 
@@ -148,6 +161,33 @@ async def test_writing_prompt_job_sends_and_sets_state(fake_bot, session_factory
 async def test_writing_prompt_job_skipped_without_chat_id(fake_bot, session_factory, settings):
     await send_writing_prompt(fake_bot, fake_dispatcher(), session_factory, settings)
     assert fake_bot.session.sent_messages == []
+
+
+async def test_writing_prompt_job_does_not_stomp_active_session(
+    fake_bot, session_factory, settings
+):
+    from aiogram.fsm.context import FSMContext
+    from aiogram.fsm.storage.base import StorageKey
+
+    from frbot.bot.handlers.review import ReviewStates
+
+    await store_chat_id(session_factory)
+    dispatcher = fake_dispatcher()
+    state = FSMContext(
+        storage=dispatcher.storage,
+        key=StorageKey(bot_id=fake_bot.id, chat_id=ALLOWED_USER_ID, user_id=ALLOWED_USER_ID),
+    )
+    await state.set_state(ReviewStates.reviewing)
+    await state.set_data({"queue": [1], "index": 0, "total": 1, "reviewed": 0, "again": 0})
+
+    await send_writing_prompt(fake_bot, dispatcher, session_factory, settings)
+
+    # The review session is untouched; the user got a nudge instead of a prompt.
+    assert await state.get_state() == ReviewStates.reviewing.state
+    assert (await state.get_data())["queue"] == [1]
+    sent = fake_bot.session.sent_messages
+    assert len(sent) == 1
+    assert "Заверши текущую" in sent[0].text
 
 
 async def test_weekly_summary_sends_stats_and_rotates_topic(fake_bot, session_factory, settings):

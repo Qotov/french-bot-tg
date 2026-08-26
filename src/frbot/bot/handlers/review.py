@@ -16,6 +16,7 @@ from aiogram.types import CallbackQuery, Message
 
 from frbot.bot import render
 from frbot.bot.keyboards import grade_kb, show_answer_kb
+from frbot.bot.telegram_utils import safe_clear_markup, safe_edit_text
 from frbot.config import Settings
 from frbot.db import repo
 from frbot.db.session import SessionFactory
@@ -114,6 +115,7 @@ async def on_show(
     query: CallbackQuery,
     state: FSMContext,
     session_factory: SessionFactory,
+    settings: Settings,
 ) -> None:
     if await state.get_state() != ReviewStates.reviewing.state:
         await query.answer(NOT_ACTIVE_TEXT, show_alert=True)
@@ -128,11 +130,12 @@ async def on_show(
         card = await repo.get_card(session, card_id)
     if card is None:
         await query.answer("Карточка была удалена.")
-        await _advance(query, state, session_factory)
+        await _advance(query, state, session_factory, settings=settings)
         return
 
     if isinstance(query.message, Message):
-        await query.message.edit_text(
+        await safe_edit_text(
+            query.message,
             _full_text(card, data["index"], data["total"]),
             reply_markup=grade_kb(card.id),
         )
@@ -174,7 +177,7 @@ async def on_grade(
             again=data["again"] + (1 if rating == 1 else 0),
         )
     if isinstance(query.message, Message):
-        await query.message.edit_reply_markup(reply_markup=None)
+        await safe_clear_markup(query.message)
     await _advance(query, state, session_factory, settings=settings)
 
 

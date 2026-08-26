@@ -8,6 +8,7 @@ from aiogram.types import CallbackQuery, Message
 
 from frbot.bot import render
 from frbot.bot.keyboards import card_preview_kb
+from frbot.bot.telegram_utils import safe_edit_text
 from frbot.config import Settings
 from frbot.db import repo
 from frbot.db.models import Card, CardKind
@@ -88,7 +89,9 @@ async def on_delete(query: CallbackQuery, session_factory: SessionFactory) -> No
         deleted = await repo.delete_card(session, card_id)
         await session.commit()
     if isinstance(query.message, Message):
-        await query.message.edit_text("🗑 Карточка удалена." if deleted else "Карточка уже удалена.")
+        await safe_edit_text(
+            query.message, "🗑 Карточка удалена." if deleted else "Карточка уже удалена."
+        )
     await query.answer()
 
 
@@ -119,12 +122,22 @@ async def on_regenerate(
         if card is None:
             return
         card.enrichment = enrichment.model_dump()
-        card.lemma = enrichment.lemma.strip().lower()
+        new_lemma = enrichment.lemma.strip().lower()
+        other = await repo.find_card_by_lemma(session, new_lemma)
+        if other is None or other.id == card_id:
+            card.lemma = new_lemma
+        else:
+            logger.info(
+                "regen kept old lemma for card %d: %r already belongs to card %d",
+                card_id,
+                new_lemma,
+                other.id,
+            )
         await session.commit()
 
     if isinstance(query.message, Message):
-        await query.message.edit_text(
-            render.card_preview(card), reply_markup=card_preview_kb(card_id)
+        await safe_edit_text(
+            query.message, render.card_preview(card), reply_markup=card_preview_kb(card_id)
         )
 
 
