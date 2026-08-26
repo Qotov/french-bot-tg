@@ -8,6 +8,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import BotCommand
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from frbot.bot.handlers import capture, drill, review, stats, system, write
@@ -51,6 +52,16 @@ def build_bot(settings: Settings) -> Bot:
         token=settings.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
+
+
+BOT_COMMANDS = [
+    BotCommand(command="review", description="Повторение карточек"),
+    BotCommand(command="write", description="Письменное задание"),
+    BotCommand(command="drill", description="Грамматика недели"),
+    BotCommand(command="stats", description="Статистика"),
+    BotCommand(command="settings", description="Настройки"),
+    BotCommand(command="help", description="Справка"),
+]
 
 
 def _alembic_upgrade() -> bool:
@@ -100,6 +111,7 @@ async def main() -> None:
 
     logger.info("starting long polling")
     try:
+        await bot.set_my_commands(BOT_COMMANDS)
         await dp.start_polling(bot)
     finally:
         scheduler.shutdown(wait=False)
