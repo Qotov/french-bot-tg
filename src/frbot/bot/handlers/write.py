@@ -27,11 +27,12 @@ from frbot.bot.telegram_utils import (
 )
 from frbot.config import Settings
 from frbot.db import repo
-from frbot.db.models import CardKind
+from frbot.db.models import CardKind, User
 from frbot.db.session import SessionFactory
 from frbot.llm.client import LLMClient, LLMError
 from frbot.srs.scheduler import SrsScheduler
 from frbot.timeutil import day_end_utc, day_start_utc
+from frbot.usage import OVER_LIMIT_TEXT, UsageLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -71,15 +72,18 @@ def _build_prompt(situation: str, words: list[str]) -> str:
 async def start_writing(
     answer: Callable[..., Awaitable[Message]],
     state: FSMContext,
+    user: User,
     session_factory: SessionFactory,
     settings: Settings,
 ) -> None:
     now = datetime.now(UTC)
     async with session_factory() as session:
-        words = await repo.pick_writing_words(session, due_until=day_end_utc(now, settings.tz))
+        words = await repo.pick_writing_words(
+            session, user_id=user.id, due_until=day_end_utc(now, settings.tz)
+        )
         situation = random.choice(WRITING_SITUATIONS)
         prompt = _build_prompt(situation, words)
-        writing = await repo.create_writing(session, prompt)
+        writing = await repo.create_writing(session, prompt, user_id=user.id)
         await session.commit()
         writing_id = writing.id
 
@@ -98,33 +102,40 @@ async def start_writing(
 async def cmd_write(
     message: Message,
     state: FSMContext,
+    user: User,
     session_factory: SessionFactory,
     settings: Settings,
 ) -> None:
-    await start_writing(message.answer, state, session_factory, settings)
+    await start_writing(message.answer, state, user, session_factory, settings)
 
 
 async def handle_answer(
     message: Message,
     state: FSMContext,
+    user: User,
     session_factory: SessionFactory,
     llm: LLMClient,
     srs: SrsScheduler,
     settings: Settings,
+    usage: UsageLimiter,
 ) -> None:
     answer_text = (message.text or "").strip()
     if not answer_text:
         return
-    await process_answer(message, answer_text, state, session_factory, llm, srs, settings)
+    await process_answer(
+        message, answer_text, state, user, session_factory, llm, srs, settings, usage
+    )
 
 
 async def handle_voice_answer(
     message: Message,
     state: FSMContext,
+    user: User,
     session_factory: SessionFactory,
     llm: LLMClient,
     srs: SrsScheduler,
     settings: Settings,
+    usage: UsageLimiter,
 ) -> None:
     """A spoken answer to the writing prompt: transcribe, show, then correct."""
     if message.voice.duration > VOICE_MAX_DURATION:
@@ -136,6 +147,9 @@ async def handle_voice_answer(
         await message.answer(VOICE_FAIL_TEXT)
         return
     data, mime_type = audio
+    if not usage.check_and_count(user.id):
+        await message.answer(OVER_LIMIT_TEXT)
+        return
     try:
         transcript = await llm.transcribe(data, mime_type, model=settings.model_fast)
     except LLMError:
@@ -148,17 +162,21 @@ async def handle_voice_answer(
         return
     shown = answer_text if len(answer_text) <= 1000 else answer_text[:1000] + "…"
     await message.answer(f"🎙 <i>{render.esc(shown)}</i>")
-    await process_answer(message, answer_text, state, session_factory, llm, srs, settings)
+    await process_answer(
+        message, answer_text, state, user, session_factory, llm, srs, settings, usage
+    )
 
 
 async def process_answer(
     message: Message,
     answer_text: str,
     state: FSMContext,
+    user: User,
     session_factory: SessionFactory,
     llm: LLMClient,
     srs: SrsScheduler,
     settings: Settings,
+    usage: UsageLimiter,
 ) -> None:
     if len(answer_text) > ANSWER_MAX_LEN:
         await message.answer(
@@ -170,8 +188,13 @@ async def process_answer(
     prompt: str = data.get("prompt", "")
 
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+    if not usage.check_and_count(user.id):
+        await message.answer(OVER_LIMIT_TEXT)
+        return
     try:
-        correction = await llm.correct(prompt, answer_text, model=settings.model_smart)
+        correction = await llm.correct(
+            prompt, answer_text, model=settings.model_smart, level=user.level
+        )
     except LLMError:
         logger.exception("correction failed")
         await message.answer(FAIL_TEXT)  # state is kept so the user can resend
@@ -181,13 +204,15 @@ async def process_answer(
     created = 0
     async with session_factory() as session:
         writing_id = data.get("writing_id")
-        writing = await repo.get_writing(session, writing_id) if writing_id else None
+        writing = (
+            await repo.get_writing(session, writing_id, user_id=user.id) if writing_id else None
+        )
         if writing is not None:
             writing.answer = answer_text
             writing.corrections = correction.model_dump()
 
         cap_left = repo.ERROR_CARDS_DAILY_CAP - await repo.count_error_cards_created_since(
-            session, since=day_start_utc(now, settings.tz)
+            session, user_id=user.id, since=day_start_utc(now, settings.tz)
         )
         for error in correction.errors:
             if cap_left <= 0:
@@ -195,6 +220,7 @@ async def process_answer(
             card = await repo.create_error_card(
                 session,
                 srs,
+                user_id=user.id,
                 kind=CardKind.error.value,
                 sentence=correction.corrected_text,
                 original=error.original,

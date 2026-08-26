@@ -45,17 +45,23 @@ def test_day_start_on_regular_day():
 
 
 async def test_regenerate_rejected_when_lemma_belongs_to_other_card(
-    fake_bot, session_factory, settings
+    fake_bot, session_factory, settings, user, usage
 ):
     first = Enrichment.model_validate(load_fixture_json("enrichment_valid.json"))
     second = first.model_copy(update={"lemma": "quotidien"})
     srs = SrsScheduler(desired_retention=0.9)
     llm = FakeLLM(enrich_results=[first, second, first])
     await handle_capture(
-        make_message("au fur et à mesure", bot=fake_bot), session_factory, llm, srs, settings
+        make_message("au fur et à mesure", bot=fake_bot),
+        user,
+        session_factory,
+        llm,
+        srs,
+        settings,
+        usage,
     )
     await handle_capture(
-        make_message("quotidien", bot=fake_bot), session_factory, llm, srs, settings
+        make_message("quotidien", bot=fake_bot), user, session_factory, llm, srs, settings, usage
     )
     async with session_factory() as session:
         cards = list((await session.execute(select(Card).order_by(Card.id))).scalars())
@@ -63,7 +69,7 @@ async def test_regenerate_rejected_when_lemma_belongs_to_other_card(
 
     # Regenerating card 2 returns card 1's lemma -> rejected, card untouched.
     query = make_callback_query(f"card:regen:{cards[1].id}", bot=fake_bot)
-    await on_regenerate(query, session_factory, llm, settings)
+    await on_regenerate(query, user, session_factory, llm, settings, usage)
 
     async with session_factory() as session:
         card = await session.get(Card, cards[1].id)
@@ -100,7 +106,7 @@ def test_correction_message_never_exceeds_telegram_limit():
 # ------------------------------------------------------------ fsm janitor job
 
 
-async def test_cleanup_prunes_stray_fsm_entries(fake_bot, settings):
+async def test_cleanup_prunes_stray_fsm_entries(fake_bot, settings, session_factory, user):
     from aiogram.fsm.storage.base import StorageKey
 
     from frbot.jobs.reminders import cleanup_stray_fsm_entries
@@ -113,22 +119,19 @@ async def test_cleanup_prunes_stray_fsm_entries(fake_bot, settings):
     await storage.set_state(stranger, "some:state")
     await storage.set_state(ours, "review:reviewing")
 
-    await cleanup_stray_fsm_entries(dispatcher, settings.allowed_user_id)
+    await cleanup_stray_fsm_entries(dispatcher, session_factory)
 
     assert stranger not in storage.storage
     assert ours in storage.storage
 
 
-async def test_writing_job_with_real_dispatcher_isolation(fake_bot, session_factory, settings):
+async def test_writing_job_with_real_dispatcher_isolation(
+    fake_bot, session_factory, settings, user
+):
     """The job path that takes the real per-user isolation lock."""
     from frbot.__main__ import build_dispatcher
-    from frbot.db import repo
     from frbot.jobs.reminders import send_writing_prompt
 
-    async with session_factory() as session:
-        await repo.set_setting(session, repo.CHAT_ID_KEY, str(ALLOWED_USER_ID))
-        await session.commit()
-
     dp = build_dispatcher(settings, session_factory, llm=FakeLLM(), srs=SrsScheduler(0.9))
-    await send_writing_prompt(fake_bot, dp, session_factory, settings)
+    await send_writing_prompt(fake_bot, dp, user, session_factory, settings)
     assert any("Задание" in (m.text or "") for m in fake_bot.session.sent_messages)

@@ -7,7 +7,7 @@ table; see db/repo.py.
 
 import re
 
-from pydantic import field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
@@ -23,7 +23,13 @@ class Settings(BaseSettings):
 
     bot_token: str
     gemini_api_key: str
-    allowed_user_id: int
+    # The bot owner (auto-registered as admin). ALLOWED_USER_ID is the
+    # pre-pilot name of the same setting and still works.
+    admin_user_id: int = Field(
+        validation_alias=AliasChoices("ADMIN_USER_ID", "ALLOWED_USER_ID", "admin_user_id")
+    )
+    max_users: int = 50
+    daily_llm_actions: int = 150  # per-user daily cap on LLM-backed actions
     tz: str = "Europe/Paris"
     db_url: str = "sqlite+aiosqlite:///data/frbot.db"
     # One model for everything: Gemini 3.5 Flash-Lite. The two knobs are kept

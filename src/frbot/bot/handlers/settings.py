@@ -14,14 +14,14 @@ from aiogram.types import CallbackQuery, Message
 from frbot.bot.keyboards import settings_kb
 from frbot.config import TIME_RE, Settings
 from frbot.db import repo
+from frbot.db.models import User
 from frbot.db.session import SessionFactory
-from frbot.jobs.reminders import REMINDER_JOB_ID, WRITING_JOB_ID, reschedule_daily_job
 
 logger = logging.getLogger(__name__)
 
-TIME_KEYS = {"REMINDER_TIME": REMINDER_JOB_ID, "WRITING_TIME": WRITING_JOB_ID}
+TIME_KEYS = ("REMINDER_TIME", "WRITING_TIME")
 INT_KEYS = ("DAILY_NEW_LIMIT", "SESSION_MAX")
-EDITABLE_KEYS = (*TIME_KEYS.keys(), *INT_KEYS)
+EDITABLE_KEYS = (*TIME_KEYS, *INT_KEYS)
 
 PROMPTS = {
     "REMINDER_TIME": "Пришли время напоминания в формате ЧЧ:ММ (например, 08:30).",
@@ -35,9 +35,11 @@ class SettingsStates(StatesGroup):
     awaiting_value = State()
 
 
-async def _current_values(session_factory: SessionFactory, settings: Settings) -> dict[str, str]:
+async def _current_values(
+    session_factory: SessionFactory, settings: Settings, user_id: int
+) -> dict[str, str]:
     async with session_factory() as session:
-        cfg = await repo.get_effective_config(session, settings)
+        cfg = await repo.get_effective_config(session, settings, user_id=user_id)
     return {
         "REMINDER_TIME": cfg.reminder_time,
         "WRITING_TIME": cfg.writing_time,
@@ -49,11 +51,12 @@ async def _current_values(session_factory: SessionFactory, settings: Settings) -
 async def cmd_settings(
     message: Message,
     state: FSMContext,
+    user: User,
     session_factory: SessionFactory,
     settings: Settings,
 ) -> None:
     await state.clear()
-    values = await _current_values(session_factory, settings)
+    values = await _current_values(session_factory, settings, user.id)
     await message.answer(
         "⚙️ <b>Настройки</b> — нажми, чтобы изменить:", reply_markup=settings_kb(values)
     )
@@ -86,9 +89,9 @@ def _validate(key: str, raw: str) -> str | None:
 async def handle_value(
     message: Message,
     state: FSMContext,
+    user: User,
     session_factory: SessionFactory,
     settings: Settings,
-    scheduler=None,
 ) -> None:
     data = await state.get_data()
     key = data.get("key")
@@ -101,18 +104,14 @@ async def handle_value(
         return
 
     async with session_factory() as session:
-        await repo.set_setting(session, key, value)
+        await repo.set_user_setting(session, user_id=user.id, key=key, value=value)
         await session.commit()
     await state.clear()
-    logger.info("setting %s changed to %s", key, value)
+    logger.info("user %d changed %s to %s", user.id, key, value)
 
-    if key in TIME_KEYS and scheduler is not None:
-        try:
-            reschedule_daily_job(scheduler, TIME_KEYS[key], value, settings.tz)
-        except Exception:
-            logger.exception("failed to reschedule job for %s", key)
-
-    values = await _current_values(session_factory, settings)
+    # Per-user delivery times are read by the minute-tick job on every run,
+    # so a changed time takes effect immediately — nothing to reschedule.
+    values = await _current_values(session_factory, settings, user.id)
     await message.answer(f"✅ {key} = {value}", reply_markup=settings_kb(values))
 
 

@@ -19,6 +19,7 @@ from frbot.bot.keyboards import grade_kb, show_answer_kb
 from frbot.bot.telegram_utils import safe_answer, safe_clear_markup, safe_edit_text
 from frbot.config import Settings
 from frbot.db import repo
+from frbot.db.models import User
 from frbot.db.session import SessionFactory
 from frbot.srs.queue import build_queue
 from frbot.srs.scheduler import SrsScheduler
@@ -45,14 +46,16 @@ def _full_text(card, index: int, total: int) -> str:
 async def start_session(
     answer: Callable[..., Awaitable[Message]],
     state: FSMContext,
+    user: User,
     session_factory: SessionFactory,
     settings: Settings,
 ) -> None:
     now = datetime.now(UTC)
     async with session_factory() as session:
-        cfg = await repo.get_effective_config(session, settings)
+        cfg = await repo.get_effective_config(session, settings, user_id=user.id)
         queue = await build_queue(
             session,
+            user_id=user.id,
             now=now,
             tz=settings.tz,
             session_max=cfg.session_max,
@@ -62,7 +65,7 @@ async def start_session(
             await state.clear()
             await answer(EMPTY_TEXT)
             return
-        first_card = await repo.get_card(session, queue.card_ids[0])
+        first_card = await repo.get_card(session, queue.card_ids[0], user_id=user.id)
 
     await state.set_state(ReviewStates.reviewing)
     await state.set_data(
@@ -85,21 +88,23 @@ async def start_session(
 async def cmd_review(
     message: Message,
     state: FSMContext,
+    user: User,
     session_factory: SessionFactory,
     settings: Settings,
 ) -> None:
-    await start_session(message.answer, state, session_factory, settings)
+    await start_session(message.answer, state, user, session_factory, settings)
 
 
 async def on_start_callback(
     query: CallbackQuery,
     state: FSMContext,
+    user: User,
     session_factory: SessionFactory,
     settings: Settings,
 ) -> None:
     await safe_answer(query)
     if isinstance(query.message, Message):
-        await start_session(query.message.answer, state, session_factory, settings)
+        await start_session(query.message.answer, state, user, session_factory, settings)
 
 
 async def _current_card_id(state: FSMContext) -> int | None:
@@ -114,6 +119,7 @@ async def _current_card_id(state: FSMContext) -> int | None:
 async def on_show(
     query: CallbackQuery,
     state: FSMContext,
+    user: User,
     session_factory: SessionFactory,
     settings: Settings,
 ) -> None:
@@ -127,10 +133,10 @@ async def on_show(
 
     data = await state.get_data()
     async with session_factory() as session:
-        card = await repo.get_card(session, card_id)
+        card = await repo.get_card(session, card_id, user_id=user.id)
     if card is None:
         await query.answer("Карточка была удалена.")
-        await _advance(query, state, session_factory, settings=settings)
+        await _advance(query, state, user, session_factory, settings=settings)
         return
 
     if isinstance(query.message, Message):
@@ -145,6 +151,7 @@ async def on_show(
 async def on_grade(
     query: CallbackQuery,
     state: FSMContext,
+    user: User,
     session_factory: SessionFactory,
     srs: SrsScheduler,
     settings: Settings,
@@ -163,10 +170,12 @@ async def on_grade(
 
     now = datetime.now(UTC)
     async with session_factory() as session:
-        card = await repo.get_card(session, card_id)
+        card = await repo.get_card(session, card_id, user_id=user.id)
         if card is not None:
             result = srs.review(card.fsrs, rating, now)
-            await repo.apply_review(session, card, result, rating=rating, now=now)
+            await repo.apply_review(
+                session, card, result, user_id=user.id, rating=rating, now=now
+            )
             await session.commit()
             logger.info("graded card %d rating=%d next due %s", card_id, rating, result.due)
 
@@ -178,12 +187,13 @@ async def on_grade(
         )
     if isinstance(query.message, Message):
         await safe_clear_markup(query.message)
-    await _advance(query, state, session_factory, settings=settings)
+    await _advance(query, state, user, session_factory, settings=settings)
 
 
 async def _advance(
     query: CallbackQuery,
     state: FSMContext,
+    user: User,
     session_factory: SessionFactory,
     settings: Settings | None = None,
 ) -> None:
@@ -192,13 +202,13 @@ async def _advance(
     await state.update_data(index=index)
 
     if index >= data["total"]:
-        await _finish(query, state, session_factory, settings)
+        await _finish(query, state, user, session_factory, settings)
         return
 
     async with session_factory() as session:
-        card = await repo.get_card(session, data["queue"][index])
+        card = await repo.get_card(session, data["queue"][index], user_id=user.id)
     if card is None:
-        await _advance(query, state, session_factory, settings)
+        await _advance(query, state, user, session_factory, settings)
         return
     if isinstance(query.message, Message):
         await query.message.answer(
@@ -210,6 +220,7 @@ async def _advance(
 async def _finish(
     query: CallbackQuery,
     state: FSMContext,
+    user: User,
     session_factory: SessionFactory,
     settings: Settings | None,
 ) -> None:
@@ -220,7 +231,9 @@ async def _finish(
     if settings is not None:
         now = datetime.now(UTC)
         async with session_factory() as session:
-            tomorrow_due = await repo.count_due(session, until=tomorrow_end_utc(now, settings.tz))
+            tomorrow_due = await repo.count_due(
+                session, user_id=user.id, until=tomorrow_end_utc(now, settings.tz)
+            )
 
     summary = (
         f"✅ Готово!\n"

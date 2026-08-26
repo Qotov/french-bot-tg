@@ -159,3 +159,29 @@ TALK_TURN_USER = """Conversation so far:
 {history}
 
 The learner's latest message follows. Correct it and reply."""
+
+# -------------------------------------------------------------------- levels
+
+LEVEL_CLAUSES = {
+    "A2": (
+        "LEARNER LEVEL: A2. Use short, high-frequency vocabulary and simple tenses "
+        "(présent, passé composé, futur proche). Keep example sentences under 10 words. "
+        "Explanations must be very concrete, with no grammatical jargon beyond the basics."
+    ),
+    "B1": (
+        "LEARNER LEVEL: B1 working towards B2. Everyday and semi-formal vocabulary, "
+        "common tenses including imparfait and simple subjunctive uses."
+    ),
+    "B2": (
+        "LEARNER LEVEL: B2 working towards C1. Use richer, more idiomatic vocabulary, "
+        "nuanced register, and complex structures (subjonctif, concordance des temps, "
+        "relative clauses). Do not simplify; correct subtle register and collocation "
+        "errors a B2 learner still makes."
+    ),
+}
+
+
+def with_level(system_prompt: str, level: str) -> str:
+    """Append the level calibration to a system prompt."""
+    clause = LEVEL_CLAUSES.get(level, LEVEL_CLAUSES["B1"])
+    return f"{system_prompt}\n\n{clause}"

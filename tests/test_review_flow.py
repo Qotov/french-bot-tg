@@ -34,21 +34,21 @@ def srs() -> SrsScheduler:
     return SrsScheduler(desired_retention=0.9)
 
 
-async def test_review_with_no_cards_says_empty(fake_bot, session_factory, settings):
+async def test_review_with_no_cards_says_empty(fake_bot, session_factory, settings, user):
     state = make_state(fake_bot)
-    await cmd_review(make_message("/review", bot=fake_bot), state, session_factory, settings)
+    await cmd_review(make_message("/review", bot=fake_bot), state, user, session_factory, settings)
     assert fake_bot.session.sent_messages[0].text == EMPTY_TEXT
     assert await state.get_state() is None
 
 
-async def test_full_session_two_cards(fake_bot, session_factory, settings):
+async def test_full_session_two_cards(fake_bot, session_factory, settings, user):
     due_id = await add_vocab_card(
         session_factory, "marché", reviewed_days_ago=2, due=now() - timedelta(hours=1)
     )
     new_id = await add_vocab_card(session_factory, "boulangerie")
     state = make_state(fake_bot)
 
-    await cmd_review(make_message("/review", bot=fake_bot), state, session_factory, settings)
+    await cmd_review(make_message("/review", bot=fake_bot), state, user, session_factory, settings)
     assert await state.get_state() == ReviewStates.reviewing.state
     intro, first_front = fake_bot.session.sent_messages[:2]
     assert "1 по расписанию" in intro.text
@@ -61,6 +61,7 @@ async def test_full_session_two_cards(fake_bot, session_factory, settings):
     await on_show(
         make_callback_query(f"review:show:{due_id}", bot=fake_bot),
         state,
+        user,
         session_factory,
         settings,
     )
@@ -73,6 +74,7 @@ async def test_full_session_two_cards(fake_bot, session_factory, settings):
     await on_grade(
         make_callback_query(f"review:grade:{due_id}:3", bot=fake_bot),
         state,
+        user,
         session_factory,
         srs(),
         settings,
@@ -85,12 +87,14 @@ async def test_full_session_two_cards(fake_bot, session_factory, settings):
     await on_show(
         make_callback_query(f"review:show:{new_id}", bot=fake_bot),
         state,
+        user,
         session_factory,
         settings,
     )
     await on_grade(
         make_callback_query(f"review:grade:{new_id}:1", bot=fake_bot),
         state,
+        user,
         session_factory,
         srs(),
         settings,
@@ -103,15 +107,15 @@ async def test_full_session_two_cards(fake_bot, session_factory, settings):
     # DB effects: reviews logged, due/state updated.
     async with session_factory() as session:
         count = (await session.execute(select(func.count(Review.id)))).scalar_one()
-        due_card = await repo.get_card(session, due_id)
-        new_card = await repo.get_card(session, new_id)
+        due_card = await repo.get_card(session, due_id, user_id=ALLOWED_USER_ID)
+        new_card = await repo.get_card(session, new_id, user_id=ALLOWED_USER_ID)
     assert count == 2
     assert due_card.due > now() - timedelta(minutes=1)
     assert new_card.state != CardState.new.value
     assert new_card.fsrs["last_review"] is not None
 
 
-async def test_stale_grade_press_is_ignored(fake_bot, session_factory, settings):
+async def test_stale_grade_press_is_ignored(fake_bot, session_factory, settings, user):
     first_id = await add_vocab_card(
         session_factory, "premier", reviewed_days_ago=2, due=now() - timedelta(hours=2)
     )
@@ -119,10 +123,11 @@ async def test_stale_grade_press_is_ignored(fake_bot, session_factory, settings)
         session_factory, "deuxième", reviewed_days_ago=2, due=now() - timedelta(hours=1)
     )
     state = make_state(fake_bot)
-    await cmd_review(make_message("/review", bot=fake_bot), state, session_factory, settings)
+    await cmd_review(make_message("/review", bot=fake_bot), state, user, session_factory, settings)
     await on_grade(
         make_callback_query(f"review:grade:{first_id}:3", bot=fake_bot),
         state,
+        user,
         session_factory,
         srs(),
         settings,
@@ -131,6 +136,7 @@ async def test_stale_grade_press_is_ignored(fake_bot, session_factory, settings)
     await on_grade(
         make_callback_query(f"review:grade:{first_id}:1", bot=fake_bot),
         state,
+        user,
         session_factory,
         srs(),
         settings,
@@ -140,12 +146,13 @@ async def test_stale_grade_press_is_ignored(fake_bot, session_factory, settings)
     assert count == 1
 
 
-async def test_grade_without_session_asks_to_restart(fake_bot, session_factory, settings):
+async def test_grade_without_session_asks_to_restart(fake_bot, session_factory, settings, user):
     card_id = await add_vocab_card(session_factory, "seul")
     state = make_state(fake_bot)
     await on_grade(
         make_callback_query(f"review:grade:{card_id}:3", bot=fake_bot),
         state,
+        user,
         session_factory,
         srs(),
         settings,
@@ -157,11 +164,11 @@ async def test_grade_without_session_asks_to_restart(fake_bot, session_factory, 
     assert any("не активна" in (a.text or "") for a in answers)
 
 
-async def test_start_callback_starts_session(fake_bot, session_factory, settings):
+async def test_start_callback_starts_session(fake_bot, session_factory, settings, user):
     await add_vocab_card(session_factory, "rappel")
     state = make_state(fake_bot)
     await on_start_callback(
-        make_callback_query("review:start", bot=fake_bot), state, session_factory, settings
+        make_callback_query("review:start", bot=fake_bot), state, user, session_factory, settings
     )
     assert await state.get_state() == ReviewStates.reviewing.state
     assert any("1/1" in (m.text or "") for m in fake_bot.session.sent_messages)

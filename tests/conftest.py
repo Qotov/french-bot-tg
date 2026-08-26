@@ -4,7 +4,7 @@ from aiogram import Bot
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from frbot.config import Settings
-from frbot.db.models import Base
+from frbot.db.models import Base, User
 from frbot.db.session import SessionFactory
 from tests.fakes import ALLOWED_USER_ID, make_bot
 
@@ -15,7 +15,7 @@ def settings() -> Settings:
         _env_file=None,
         bot_token="42:TEST-TOKEN",
         gemini_api_key="test-key",
-        allowed_user_id=ALLOWED_USER_ID,
+        admin_user_id=ALLOWED_USER_ID,
     )
 
 
@@ -34,3 +34,27 @@ async def fake_bot() -> Bot:
     bot = make_bot()
     yield bot
     await bot.session.close()
+
+
+@pytest_asyncio.fixture
+async def user(session_factory) -> User:
+    """The pilot participant every handler test acts as."""
+    row = User(
+        id=ALLOWED_USER_ID,
+        username="tester",
+        first_name="Test",
+        chat_id=ALLOWED_USER_ID,
+        level="B1",
+        is_admin=True,
+    )
+    async with session_factory() as session:
+        session.add(row)
+        await session.commit()
+    return row
+
+
+@pytest.fixture
+def usage(settings):
+    from frbot.usage import UsageLimiter
+
+    return UsageLimiter(settings.daily_llm_actions, settings.tz)

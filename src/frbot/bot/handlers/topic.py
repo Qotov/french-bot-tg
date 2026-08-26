@@ -21,10 +21,12 @@ from frbot.bot.keyboards import topic_select_kb
 from frbot.bot.telegram_utils import safe_answer, safe_edit_text
 from frbot.config import Settings
 from frbot.db import repo
+from frbot.db.models import User
 from frbot.db.session import SessionFactory
 from frbot.llm.client import LLMClient, LLMError
 from frbot.llm.schemas import TOPIC_WORDS_MAX, Enrichment
 from frbot.srs.scheduler import SrsScheduler
+from frbot.usage import OVER_LIMIT_TEXT, UsageLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -67,30 +69,34 @@ async def cmd_topic(
     message: Message,
     command: CommandObject,
     state: FSMContext,
+    user: User,
     session_factory: SessionFactory,
     llm: LLMClient,
     settings: Settings,
+    usage: UsageLimiter,
 ) -> None:
     parsed = parse_topic_args(command.args or "")
     if parsed is None:
         await state.set_state(TopicStates.choosing)
         await message.answer(ASK_TOPIC_TEXT)
         return
-    await _generate(message, state, parsed, session_factory, llm, settings)
+    await _generate(message, state, parsed, user, session_factory, llm, settings, usage)
 
 
 async def handle_topic_input(
     message: Message,
     state: FSMContext,
+    user: User,
     session_factory: SessionFactory,
     llm: LLMClient,
     settings: Settings,
+    usage: UsageLimiter,
 ) -> None:
     parsed = parse_topic_args(message.text or "")
     if parsed is None:
         await message.answer(ASK_TOPIC_TEXT)
         return
-    await _generate(message, state, parsed, session_factory, llm, settings)
+    await _generate(message, state, parsed, user, session_factory, llm, settings, usage)
 
 
 def _selection_text(topic: str, words: list[dict]) -> str:
@@ -105,16 +111,24 @@ async def _generate(
     message: Message,
     state: FSMContext,
     parsed: tuple[str, int],
+    user: User,
     session_factory: SessionFactory,
     llm: LLMClient,
     settings: Settings,
+    usage: UsageLimiter,
 ) -> None:
     topic, count = parsed
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     async with session_factory() as session:
-        known = await repo.get_recent_lemmas(session, limit=100)
+        known = await repo.get_recent_lemmas(session, user_id=user.id, limit=100)
+    if not usage.check_and_count(user.id):
+        await state.clear()
+        await message.answer(OVER_LIMIT_TEXT)
+        return
     try:
-        word_list = await llm.topic_words(topic, count, known, model=settings.model_fast)
+        word_list = await llm.topic_words(
+            topic, count, known, model=settings.model_fast, level=user.level
+        )
     except LLMError:
         logger.exception("topic word generation failed for %r", topic)
         await state.clear()
@@ -125,7 +139,7 @@ async def _generate(
     fresh = []
     async with session_factory() as session:
         for word in word_list.words:
-            if await repo.find_card_by_lemma(session, word.lemma) is None:
+            if await repo.find_card_by_lemma(session, word.lemma, user_id=user.id) is None:
                 fresh.append(word.model_dump())
     if not fresh:
         await state.clear()
@@ -199,10 +213,12 @@ async def on_cancel(query: CallbackQuery, state: FSMContext) -> None:
 async def on_save(
     query: CallbackQuery,
     state: FSMContext,
+    user: User,
     session_factory: SessionFactory,
     llm: LLMClient,
     srs: SrsScheduler,
     settings: Settings,
+    usage: UsageLimiter,
 ) -> None:
     if await state.get_state() != TopicStates.selecting.state:
         await safe_answer(query, "Подборка уже не активна — /topic")
@@ -229,8 +245,12 @@ async def on_save(
 
     async def enrich_one(word: dict) -> Enrichment | Exception:
         async with semaphore:
+            if not usage.check_and_count(user.id):
+                return LLMError("daily limit")
             try:
-                return await llm.enrich(word["lemma"], model=settings.model_fast)
+                return await llm.enrich(
+                    word["lemma"], model=settings.model_fast, level=user.level
+                )
             except LLMError as exc:
                 return exc
 
@@ -245,11 +265,15 @@ async def on_save(
                 logger.warning("topic enrich failed for %r", word["lemma"])
                 failed += 1
                 continue
-            if await repo.find_card_by_lemma(session, result.lemma) is not None:
+            if await repo.find_card_by_lemma(session, result.lemma, user_id=user.id) is not None:
                 skipped += 1
                 continue
             await repo.create_vocab_card(
-                session, srs, text=word["lemma"], enrichment=result.model_dump()
+                session,
+                srs,
+                user_id=user.id,
+                text=word["lemma"],
+                enrichment=result.model_dump(),
             )
             created.append(result.lemma)
         await session.commit()

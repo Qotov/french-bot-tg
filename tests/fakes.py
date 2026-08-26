@@ -73,6 +73,10 @@ class RecordingSession(BaseSession):
                 chat=Chat.model_construct(id=int(chat_id), type="private"),
                 text=getattr(method, "text", None),
             )
+        if name == "GetMe":
+            return User.model_construct(
+                id=42, is_bot=True, first_name="frbot", username="frbot_test"
+            )
         if name == "GetFile":
             return File(
                 file_id=method.file_id,
@@ -182,6 +186,7 @@ async def add_vocab_card(
     session_factory: Any,
     lemma: str = "maison",
     *,
+    user_id: int = ALLOWED_USER_ID,
     reviewed_days_ago: float | None = None,
     due: datetime | None = None,
     suspended: bool = False,
@@ -202,6 +207,7 @@ async def add_vocab_card(
         result = srs.review(new.fsrs, 3, now=past)
         fsrs_data, card_due, card_state = result.fsrs, result.due, result.state
     card = Card(
+        user_id=user_id,
         text=lemma,
         lemma=lemma,
         kind="vocab",
@@ -257,19 +263,21 @@ class FakeLLM:
             raise result
         return result
 
-    async def enrich(self, text: str, *, model: str) -> Any:
+    async def enrich(self, text: str, *, model: str, level: str = "B1") -> Any:
         self.enrich_calls.append(text)
         return self._next(self.enrich_results)
 
-    async def correct(self, prompt: str, answer: str, *, model: str) -> Any:
+    async def correct(self, prompt: str, answer: str, *, model: str, level: str = "B1") -> Any:
         self.correct_calls.append((prompt, answer))
         return self._next(self.correct_results)
 
-    async def cloze(self, topic: str, lemmas: Any, *, model: str) -> Any:
+    async def cloze(self, topic: str, lemmas: Any, *, model: str, level: str = "B1") -> Any:
         self.cloze_calls.append((topic, list(lemmas)))
         return self._next(self.cloze_results)
 
-    async def topic_words(self, topic: str, count: int, known_lemmas: Any, *, model: str) -> Any:
+    async def topic_words(
+        self, topic: str, count: int, known_lemmas: Any, *, model: str, level: str = "B1"
+    ) -> Any:
         self.topic_calls.append((topic, count, list(known_lemmas)))
         return self._next(self.topic_results)
 
@@ -281,7 +289,7 @@ class FakeLLM:
         self.transcribe_calls.append(mime_type)
         return self._next(self.transcribe_results)
 
-    async def talk_open(self, lemmas: Any, *, model: str) -> Any:
+    async def talk_open(self, lemmas: Any, *, model: str, level: str = "B1") -> Any:
         self.talk_calls.append({"kind": "open", "lemmas": list(lemmas)})
         return self._next(self.talk_results)
 
@@ -290,6 +298,7 @@ class FakeLLM:
         history: str,
         *,
         model: str,
+        level: str = "B1",
         text: str | None = None,
         audio: tuple[bytes, str] | None = None,
     ) -> Any:
