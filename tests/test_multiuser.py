@@ -327,3 +327,98 @@ async def test_cap_does_not_block_reviews(fake_bot, session_factory, settings, u
     )
     await cmd_review(make_message("/review", bot=fake_bot), state, user, session_factory, settings)
     assert any("1/1" in (m.text or "") for m in fake_bot.session.sent_messages)
+
+
+# ---------------------------------------------------- end-to-end isolation
+
+# Card ids are sequential integers, so a participant can trivially guess another
+# person's card id. These tests drive the REAL dispatcher (auth middleware, DI,
+# routers) to prove the guess is useless — repo-level scoping is not enough on
+# its own if a handler ever forgets to pass the owner.
+
+
+def _dispatcher(settings, session_factory, llm):
+    from frbot.__main__ import build_dispatcher
+    from frbot.srs.scheduler import SrsScheduler
+
+    return build_dispatcher(
+        settings, session_factory, llm=llm, srs=SrsScheduler(settings.desired_retention)
+    )
+
+
+async def test_other_user_cannot_delete_my_card_via_callback(
+    fake_bot, session_factory, settings, two_users
+):
+    """The classic attack: send card:delete:<id> for a card you do not own."""
+    from aiogram.types import Update
+
+    from frbot.db import repo
+    from tests.fakes import FakeLLM, make_callback_query, make_message
+
+    alice, bob = ALICE, BOB
+    card_id = await add_vocab_card(session_factory, "secret", user_id=alice)
+
+    dp = _dispatcher(settings, session_factory, FakeLLM())
+    # Bob presses delete on Alice's card id.
+    query = make_callback_query(
+        f"card:delete:{card_id}",
+        user_id=bob,
+        message=make_message("preview", user_id=bob, message_id=77),
+    )
+    await dp.feed_update(fake_bot, Update(update_id=900, callback_query=query))
+
+    async with session_factory() as session:
+        assert await repo.get_card(session, card_id, user_id=alice) is not None
+    texts = [m.text or "" for m in fake_bot.session.sent("EditMessageText")]
+    assert not any("удалена" in t and "уже" not in t for t in texts)
+
+
+async def test_review_via_dispatcher_serves_only_own_cards(
+    fake_bot, session_factory, settings, two_users
+):
+    from aiogram.types import Update
+
+    from tests.fakes import FakeLLM, make_message
+
+    alice, bob = ALICE, BOB
+    now = datetime.now(UTC)
+    await add_vocab_card(
+        session_factory,
+        "alice-mot",
+        user_id=alice,
+        reviewed_days_ago=2,
+        due=now - timedelta(hours=1),
+    )
+    await add_vocab_card(
+        session_factory,
+        "bob-mot",
+        user_id=bob,
+        reviewed_days_ago=2,
+        due=now - timedelta(hours=1),
+    )
+
+    dp = _dispatcher(settings, session_factory, FakeLLM())
+    await dp.feed_update(
+        fake_bot, Update(update_id=901, message=make_message("/review", user_id=bob))
+    )
+    shown = " ".join(m.text or "" for m in fake_bot.session.sent_messages)
+    assert "bob-mot" in shown
+    assert "alice-mot" not in shown
+
+
+async def test_unregistered_stranger_reaches_nothing(
+    fake_bot, session_factory, settings, two_users
+):
+    from aiogram.types import Update
+
+    from tests.fakes import FakeLLM, make_message
+
+    llm = FakeLLM()
+    dp = _dispatcher(settings, session_factory, llm)
+    stranger = 424242
+    for i, text in enumerate(["/review", "/stats", "bonjour", "/topic ресторан"]):
+        await dp.feed_update(
+            fake_bot, Update(update_id=910 + i, message=make_message(text, user_id=stranger))
+        )
+    assert fake_bot.session.sent_messages == []
+    assert llm.enrich_calls == []
