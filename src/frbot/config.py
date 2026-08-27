@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     model_tts: str = "gemini-3.1-flash-tts-preview"
     tts_voice: str = "Kore"
     tts_enabled: bool = True
+    tts_cache_max_files: int = 2_000  # bounds the pronunciation cache on disk
     daily_new_limit: int = 15
     session_max: int = 30
     reminder_time: str = "08:30"

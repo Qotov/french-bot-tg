@@ -29,6 +29,14 @@ logger = logging.getLogger(__name__)
 
 NOT_ACTIVE_TEXT = "Сессия не активна — начни заново: /review"
 EMPTY_TEXT = "🎉 Сегодня нечего повторять — всё выучено."
+
+
+def _audio_on(settings: Settings) -> bool:
+    from frbot.bot.pronounce import audio_supported
+
+    return settings.tts_enabled and audio_supported()
+
+
 NO_CARDS_TEXT = (
     "В колоде пока пусто 🙂\n\n"
     "Пришли любое французское слово — сделаю карточку. "
@@ -150,7 +158,8 @@ async def on_show(
             query.message,
             _full_text(card, data["index"], data["total"]),
             reply_markup=grade_kb(
-                card.id, with_audio=settings.tts_enabled and card.kind == CardKind.vocab.value
+                card.id,
+                with_audio=_audio_on(settings) and card.kind == CardKind.vocab.value,
             ),
         )
     await query.answer()

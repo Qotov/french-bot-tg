@@ -32,6 +32,7 @@ from frbot.llm.schemas import (
 logger = logging.getLogger(__name__)
 
 MAX_TOKENS = 1500
+MAX_TOKENS_CEILING = 8000  # exam essays need far more room than a daily exercise
 TEMPERATURE_ENRICH = 0.2
 TEMPERATURE_DRILL = 0.2
 TEMPERATURE_CORRECTION = 0.0
@@ -94,6 +95,7 @@ class LLMClient:
             contents=prompts.CORRECTION_USER.format(prompt=prompt, answer=answer),
             schema=WritingCorrection,
             temperature=TEMPERATURE_CORRECTION,
+            max_tokens=correction_token_budget(answer),
         )
 
     async def cloze(
@@ -239,8 +241,9 @@ class LLMClient:
         contents: str | list[Any],
         schema: type[T],
         temperature: float,
+        max_tokens: int = MAX_TOKENS,
     ) -> T:
-        text = await self._call(model, system, contents, temperature)
+        text = await self._call(model, system, contents, temperature, max_tokens)
         try:
             return _parse(text, schema)
         except (json.JSONDecodeError, ValidationError) as exc:
@@ -254,7 +257,7 @@ class LLMClient:
                 retry_contents = f"{contents}\n\n{retry_note}"
             else:
                 retry_contents = [*contents, retry_note]
-            text = await self._call(model, system, retry_contents, temperature)
+            text = await self._call(model, system, retry_contents, temperature, max_tokens)
             try:
                 return _parse(text, schema)
             except (json.JSONDecodeError, ValidationError) as exc2:
@@ -262,7 +265,12 @@ class LLMClient:
                 raise LLMOutputError(f"invalid {schema.__name__} output") from exc2
 
     async def _call(
-        self, model: str, system: str, contents: str | list[Any], temperature: float
+        self,
+        model: str,
+        system: str,
+        contents: str | list[Any],
+        temperature: float,
+        max_tokens: int = MAX_TOKENS,
     ) -> str:
         last_exc: Exception | None = None
         for attempt in range(len(self._backoff) + 1):
@@ -275,7 +283,7 @@ class LLMClient:
                     config=genai_types.GenerateContentConfig(
                         system_instruction=system,
                         temperature=temperature,
-                        max_output_tokens=MAX_TOKENS,
+                        max_output_tokens=max_tokens,
                     ),
                 )
             except genai_errors.APIError as exc:
@@ -291,6 +299,12 @@ class LLMClient:
                 last_exc = exc
                 continue
 
+            if _hit_token_ceiling(response):
+                # Truncated output is not malformed JSON to re-prompt; retrying
+                # with the same ceiling would truncate identically forever.
+                logger.error("llm output hit the %d-token ceiling", max_tokens)
+                raise LLMError("response exceeded the output budget")
+
             usage = getattr(response, "usage_metadata", None)
             logger.info(
                 "llm call model=%s input_tokens=%s output_tokens=%s",
@@ -301,6 +315,24 @@ class LLMClient:
             return response.text or ""
         logger.error("llm call failed after %d attempts", len(self._backoff) + 1)
         raise LLMError("Gemini API unavailable") from last_exc
+
+
+def correction_token_budget(answer: str) -> int:
+    """Enough room to re-emit the text plus its error list.
+
+    A 250-word DELF essay cannot be corrected inside the default budget: the
+    JSON carries the whole corrected text plus one object per error, and
+    Cyrillic explanations cost roughly two characters per token.
+    """
+    return max(MAX_TOKENS, min(int(len(answer) / 2) + 1200, MAX_TOKENS_CEILING))
+
+
+def _hit_token_ceiling(response: Any) -> bool:
+    for candidate in getattr(response, "candidates", None) or []:
+        reason = getattr(candidate, "finish_reason", None)
+        if reason is not None and "MAX_TOKENS" in str(reason).upper():
+            return True
+    return False
 
 
 def _extract_audio(response: Any) -> bytes | None:

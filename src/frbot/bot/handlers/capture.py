@@ -29,6 +29,13 @@ from frbot.usage import OVER_LIMIT_TEXT, UsageLimiter
 logger = logging.getLogger(__name__)
 
 CAPTURE_MAX_LEN = 200
+
+
+def _audio_on(settings: Settings) -> bool:
+    """No 🔊 button when this host cannot actually produce audio."""
+    from frbot.bot.pronounce import audio_supported
+
+    return settings.tts_enabled and audio_supported()
 FAIL_TEXT = "⚠️ Не получилось обработать. Попробуй ещё раз через минуту."
 VOICE_FAIL_TEXT = "⚠️ Не получилось разобрать голосовое. Попробуй ещё раз."
 VOICE_NO_WORDS_TEXT = (
@@ -58,7 +65,7 @@ async def capture_one(
     if existing is not None:
         await message.answer(
             render.card_preview(existing, existing=True),
-            reply_markup=card_preview_kb(existing.id),
+            reply_markup=card_preview_kb(existing.id, with_audio=_audio_on(settings)),
         )
         return True
 
@@ -78,7 +85,7 @@ async def capture_one(
         if existing is not None:
             await message.answer(
                 render.card_preview(existing, existing=True),
-                reply_markup=card_preview_kb(existing.id),
+                reply_markup=card_preview_kb(existing.id, with_audio=_audio_on(settings)),
             )
             return True
         card = await repo.create_vocab_card(
@@ -88,7 +95,10 @@ async def capture_one(
         card_id = card.id
 
     logger.info("captured card %d: %s", card_id, enrichment.lemma)
-    await message.answer(render.card_preview(card), reply_markup=card_preview_kb(card_id))
+    await message.answer(
+        render.card_preview(card),
+        reply_markup=card_preview_kb(card_id, with_audio=_audio_on(settings)),
+    )
     return True
 
 
@@ -236,7 +246,9 @@ async def on_regenerate(
 
     if isinstance(query.message, Message):
         await safe_edit_text(
-            query.message, render.card_preview(card), reply_markup=card_preview_kb(card_id)
+            query.message,
+            render.card_preview(card),
+            reply_markup=card_preview_kb(card_id, with_audio=_audio_on(settings)),
         )
 
 

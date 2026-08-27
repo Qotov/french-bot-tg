@@ -5,7 +5,8 @@ import logging
 from aiogram import F, Router
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
-from frbot.bot.audio import AudioUnavailable, VoiceCache, ffmpeg_available, to_voice_ogg
+from frbot.bot import render
+from frbot.bot.audio import AudioUnavailable, VoiceCache, opus_available, to_voice_ogg
 from frbot.bot.telegram_utils import safe_answer
 from frbot.config import Settings
 from frbot.db import repo
@@ -67,7 +68,9 @@ async def on_speak(
         return
 
     phrase = (_phrase_for(card, which) or "")[:MAX_SPEAK_LEN]
-    if not settings.tts_enabled or not phrase:
+    if not settings.tts_enabled or not phrase or not audio_supported():
+        # Check what this host can actually do BEFORE spending quota and money
+        # on a synthesis we would then be unable to encode.
         await safe_answer(query, UNAVAILABLE_TEXT)
         return
 
@@ -89,8 +92,19 @@ async def on_speak(
     if isinstance(query.message, Message):
         await query.message.answer_voice(
             BufferedInputFile(ogg, filename="prononciation.ogg"),
-            caption=f"🔊 {phrase[:200]}",
+            caption=f"🔊 {render.esc(phrase[:200])}",
         )
+
+
+_opus_supported: bool | None = None
+
+
+def audio_supported() -> bool:
+    """Cached capability probe: ffmpeg present and built with libopus."""
+    global _opus_supported
+    if _opus_supported is None:
+        _opus_supported = opus_available()
+    return _opus_supported
 
 
 def create_router() -> Router:
@@ -100,8 +114,9 @@ def create_router() -> Router:
 
 
 def startup_check(settings: Settings) -> None:
-    if settings.tts_enabled and not ffmpeg_available():
+    if settings.tts_enabled and not audio_supported():
         logger.warning(
-            "TTS is enabled but ffmpeg is not installed — pronunciation will be "
-            "unavailable. Install it (apt install ffmpeg) or set TTS_ENABLED=false."
+            "TTS is enabled but ffmpeg with libopus is not available — the 🔊 "
+            "buttons will be hidden. Install it (apt install ffmpeg) or set "
+            "TTS_ENABLED=false."
         )

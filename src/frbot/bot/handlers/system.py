@@ -15,6 +15,12 @@ from frbot.bot import render
 from frbot.bot.alerts import AdminAlerter
 from frbot.bot.handlers.placement import cmd_placement
 from frbot.bot.handlers.topic import build_starter_deck
+from frbot.bot.onboarding import (
+    BUILDING_DECK_TEXT,
+    DECK_FAILED_TEXT,
+    FIRST_STEPS_TEXT,
+    STARTER_DECK_TIMEOUT,
+)
 from frbot.bot.telegram_utils import safe_answer, safe_edit_text
 from frbot.config import Settings
 from frbot.db import repo
@@ -60,18 +66,6 @@ LEVEL_HINTS = {
     "B2": "уверенно говорю, хочу точности и нюансов",
 }
 
-BUILDING_DECK_TEXT = "Собираю тебе стартовый набор карточек, это займёт секунд десять…"
-STARTER_DECK_TIMEOUT = 60  # seconds; the per-user lock is held for this long
-
-FIRST_STEPS_TEXT = (
-    "Дальше всё в твоих руках:\n\n"
-    "1️⃣ Присылай слова, которые встретил — текстом или голосом 🎙\n"
-    "2️⃣ /topic и тема — соберу подборку под твой уровень\n"
-    "3️⃣ Вечером пришлю задание на письмо, разберу ошибки\n\n"
-    "10–15 минут в день. /help — если что-то забудешь.\n\n"
-    "<i>Что я храню: твои карточки, тексты и голосовые — чтобы проверять их и "
-    "составлять повторения. Никому не передаю. Удалить всё: /delete_me</i>"
-)
 
 NEED_INVITE_TEXT = (
     "Это закрытая бета. Чтобы войти, пришли код приглашения:\n<code>/start ТВОЙКОД</code>"
@@ -168,7 +162,7 @@ async def on_level_chosen(
         await safe_answer(query)
         if isinstance(query.message, Message):
             await safe_edit_text(query.message, "🎯 Определим уровень тестом.")
-            await cmd_placement(query.message, state)
+            await cmd_placement(query.message, state, onboarding=True)
         return
     async with session_factory() as session:
         ok = await repo.set_user_level(session, user.id, level)
@@ -213,10 +207,7 @@ async def on_level_chosen(
                 f"Попробуй прямо сейчас: /review"
             )
         else:
-            await query.message.answer(
-                "Не получилось собрать стартовый набор — не страшно. "
-                "Пришли любое французское слово или набери /topic с темой."
-            )
+            await query.message.answer(DECK_FAILED_TEXT)
 
     await query.message.answer(FIRST_STEPS_TEXT)
 

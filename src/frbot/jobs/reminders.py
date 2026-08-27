@@ -26,6 +26,7 @@ from apscheduler.triggers.cron import CronTrigger
 from frbot.bot import render
 from frbot.bot.alerts import AdminAlerter
 from frbot.bot.alerts import esc as alerts_esc
+from frbot.bot.audio import VoiceCache, cache_dir
 from frbot.bot.handlers.write import start_writing
 from frbot.bot.keyboards import start_review_kb
 from frbot.config import Settings
@@ -264,7 +265,9 @@ async def _deliver(
 
 
 async def cleanup_stray_fsm_entries(
-    dispatcher: HasStorage, session_factory: SessionFactory
+    dispatcher: HasStorage,
+    session_factory: SessionFactory,
+    settings: Settings | None = None,
 ) -> None:
     """Updates from people who are not pilot participants still allocate a
     per-user lock and storage record before the auth middleware drops them;
@@ -288,6 +291,14 @@ async def cleanup_stray_fsm_entries(
                 removed += 1
     logger.info("fsm cleanup: %d stray entries removed", removed)
 
+    if settings is not None:
+        # The pronunciation cache is unbounded otherwise: every new phrase any
+        # participant ever hears stays on disk forever.
+        cache = VoiceCache(cache_dir(settings.db_url), settings.tts_cache_max_files)
+        pruned = await asyncio.to_thread(cache.prune)
+        if pruned:
+            logger.info("tts cache: %d files pruned", pruned)
+
 
 async def send_weekly_summary(
     bot: Bot, session_factory: SessionFactory, settings: Settings
@@ -301,11 +312,10 @@ async def send_weekly_summary(
     async with session_factory() as session:
         await repo.ensure_drill_topics_seeded(session)
         users = await repo.list_active_users(session)
-        topic = await repo.get_topic_for_week(session, today=next_week)
-        if topic is not None:
-            await repo.mark_topic_announced(session, topic, week=next_week)
+        general_topic = await repo.get_topic_for_week(session, today=next_week)
+        if general_topic is not None:
+            await repo.mark_topic_announced(session, general_topic, week=next_week)
         await session.commit()
-        topic_title = topic.title_fr if topic else None
 
     for user in users:
         try:
@@ -321,10 +331,16 @@ async def send_weekly_summary(
                 )
             chat_id = user.chat_id or user.id
             await bot.send_message(chat_id, render.weekly_summary(stats))
-            if topic_title:
+            # An exam track reorders the rotation, so announce the topic this
+            # learner will actually be drilled on — not the general one.
+            async with session_factory() as session:
+                topic = await repo.get_topic_for_week(
+                    session, today=next_week, track=user.track
+                )
+            if topic is not None:
                 await bot.send_message(
                     chat_id,
-                    f"📅 Тема следующей недели: <b>{render.esc(topic_title)}</b> — /drill",
+                    f"📅 Тема следующей недели: <b>{render.esc(topic.title_fr)}</b> — /drill",
                 )
             await asyncio.sleep(1 / SEND_RATE)
         except Exception:
@@ -465,7 +481,7 @@ def setup_jobs(
         cleanup_stray_fsm_entries,
         _daily(CLEANUP_TIME, settings.tz),
         id=CLEANUP_JOB_ID,
-        args=[dispatcher, session_factory],
+        args=[dispatcher, session_factory, settings],
         replace_existing=True,
     )
     logger.info(

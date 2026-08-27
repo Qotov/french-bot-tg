@@ -18,7 +18,10 @@ class Track:
     level: str  # the level this exam is pitched at
     word_target: tuple[int, int]  # min, max words expected in a written task
     criteria_ru: str  # what the correction should weigh
-    tasks: tuple[str, ...] = field(default_factory=tuple)
+    # Each task carries its own range: TCF deliberately mixes three task types
+    # with three official lengths, so a single per-track number would contradict
+    # the task text the learner is reading.
+    tasks: tuple[tuple[str, int, int], ...] = field(default_factory=tuple)
     drill_priority: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -43,19 +46,36 @@ DELF_B1 = Track(
         "простые сложноподчинённые предложения."
     ),
     tasks=(
-        "Vous écrivez à un ami francophone pour raconter une expérience "
-        "personnelle marquante et expliquer ce qu'elle vous a appris (160–180 mots).",
-        "Sur le forum de votre ville, vous réagissez à un projet de fermeture "
-        "d'une bibliothèque : donnez votre opinion et proposez une solution "
-        "(160–180 mots).",
-        "Vous écrivez au journal local pour raconter un événement auquel vous "
-        "avez participé et donner votre avis (160–180 mots).",
-        "Un ami hésite à s'installer dans votre ville. Écrivez-lui pour "
-        "présenter les avantages et les inconvénients (160–180 mots).",
-        "Vous racontez dans votre blog un voyage qui ne s'est pas passé comme "
-        "prévu et ce que vous en retenez (160–180 mots).",
-        "Votre entreprise veut supprimer le télétravail. Écrivez au responsable "
-        "pour exposer votre point de vue (160–180 mots).",
+        (
+            "Vous écrivez à un ami francophone pour raconter une expérience "
+            "personnelle marquante et expliquer ce qu'elle vous a appris.",
+            160, 180,
+        ),
+        (
+            "Sur le forum de votre ville, vous réagissez à un projet de fermeture "
+            "d'une bibliothèque : donnez votre opinion et proposez une solution.",
+            160, 180,
+        ),
+        (
+            "Vous écrivez au journal local pour raconter un événement auquel vous "
+            "avez participé et donner votre avis.",
+            160, 180,
+        ),
+        (
+            "Un ami hésite à s'installer dans votre ville. Écrivez-lui pour "
+            "présenter les avantages et les inconvénients.",
+            160, 180,
+        ),
+        (
+            "Vous racontez dans votre blog un voyage qui ne s'est pas passé comme "
+            "prévu et ce que vous en retenez.",
+            160, 180,
+        ),
+        (
+            "Votre entreprise veut supprimer le télétravail. Écrivez au responsable "
+            "pour exposer votre point de vue.",
+            160, 180,
+        ),
     ),
     drill_priority=(
         "aux-passe-compose",
@@ -78,18 +98,36 @@ DELF_B2 = Track(
         "subjonctif и concordance des temps, точная лексика."
     ),
     tasks=(
-        "Le maire de votre ville veut interdire les voitures au centre-ville. "
-        "Vous lui écrivez une lettre formelle argumentée (250 mots).",
-        "« Les réseaux sociaux nuisent au débat démocratique. » Vous rédigez un "
-        "article argumenté pour un magazine (250 mots).",
-        "Votre université envisage de remplacer les cours en présentiel par des "
-        "cours en ligne. Rédigez une contribution argumentée (250 mots).",
-        "Faut-il rendre le bénévolat obligatoire pour les jeunes ? Défendez une "
-        "position nuancée dans un texte structuré (250 mots).",
-        "Vous répondez à un article qui affirme que le télétravail détruit le "
-        "lien social. Rédigez une réponse argumentée (250 mots).",
-        "« Voyager loin n'apprend rien de plus que lire. » Discutez cette "
-        "affirmation dans un essai structuré (250 mots).",
+        (
+            "Le maire de votre ville veut interdire les voitures au centre-ville. "
+            "Vous lui écrivez une lettre formelle argumentée.",
+            240, 260,
+        ),
+        (
+            "« Les réseaux sociaux nuisent au débat démocratique. » Vous rédigez "
+            "un article argumenté pour un magazine.",
+            240, 260,
+        ),
+        (
+            "Votre université envisage de remplacer les cours en présentiel par "
+            "des cours en ligne. Rédigez une contribution argumentée.",
+            240, 260,
+        ),
+        (
+            "Faut-il rendre le bénévolat obligatoire pour les jeunes ? Défendez "
+            "une position nuancée dans un texte structuré.",
+            240, 260,
+        ),
+        (
+            "Vous répondez à un article qui affirme que le télétravail détruit "
+            "le lien social. Rédigez une réponse argumentée.",
+            240, 260,
+        ),
+        (
+            "« Voyager loin n'apprend rien de plus que lire. » Discutez cette "
+            "affirmation dans un essai structuré.",
+            240, 260,
+        ),
     ),
     drill_priority=(
         "subjonctif-present",
@@ -112,18 +150,36 @@ TCF = Track(
         "tâche 3 — сопоставление и синтез), грамматическая точность."
     ),
     tasks=(
-        "Tâche 1 : vous écrivez à votre voisin pour lui demander de surveiller "
-        "votre appartement pendant vos vacances (60–120 mots).",
-        "Tâche 2 : pour le journal de votre association, vous rédigez un article "
-        "sur un changement récent dans votre quartier (120–150 mots).",
-        "Tâche 3 : deux personnes s'opposent sur l'utilité des examens. "
-        "Comparez leurs positions puis donnez la vôtre (120–180 mots).",
-        "Tâche 1 : vous écrivez au service client pour signaler un problème et "
-        "demander un dédommagement (60–120 mots).",
-        "Tâche 2 : vous rédigez un texte présentant les avantages du vélo en "
-        "ville pour un site d'information (120–150 mots).",
-        "Tâche 3 : comparez deux points de vue sur le travail à distance, puis "
-        "prenez position (120–180 mots).",
+        (
+            "Tâche 1 : vous écrivez à votre voisin pour lui demander de "
+            "surveiller votre appartement pendant vos vacances.",
+            60, 120,
+        ),
+        (
+            "Tâche 2 : pour le journal de votre association, vous rédigez un "
+            "article sur un changement récent dans votre quartier.",
+            120, 150,
+        ),
+        (
+            "Tâche 3 : deux personnes s'opposent sur l'utilité des examens. "
+            "Comparez leurs positions puis donnez la vôtre.",
+            120, 180,
+        ),
+        (
+            "Tâche 1 : vous écrivez au service client pour signaler un problème "
+            "et demander un dédommagement.",
+            60, 120,
+        ),
+        (
+            "Tâche 2 : vous rédigez un texte présentant les avantages du vélo en "
+            "ville pour un site d'information.",
+            120, 150,
+        ),
+        (
+            "Tâche 3 : comparez deux points de vue sur le travail à distance, "
+            "puis prenez position.",
+            120, 180,
+        ),
     ),
     drill_priority=(
         "subjonctif-present",
@@ -144,6 +200,10 @@ def get(slug: str | None) -> Track:
 
 def is_exam(slug: str | None) -> bool:
     return get(slug).slug != GENERAL.slug
+
+
+def task_word_range(track: Track, task: tuple[str, int, int] | None) -> tuple[int, int]:
+    return (task[1], task[2]) if task else track.word_target
 
 
 def ordered_topic_slugs(slug: str | None, all_slugs: list[str]) -> list[str]:

@@ -113,15 +113,19 @@ def _build_prompt(situation: str, words: list[str]) -> str:
     return situation
 
 
-def _pick_task(track: tracks.Track, words: list[str]) -> tuple[str, str]:
-    """Returns (situation shown to the learner, prompt sent to the corrector)."""
+def _pick_task(
+    track: tracks.Track, words: list[str]
+) -> tuple[str, str, tuple[int, int]]:
+    """Returns (situation shown, prompt for the corrector, word range)."""
     if tracks.is_exam(track.slug) and track.tasks:
-        situation = random.choice(track.tasks)
+        text, low, high = random.choice(track.tasks)
         # Exam tasks are self-contained; forcing vocabulary into them would
-        # break the format the learner is being marked on.
-        return situation, situation
+        # break the format the learner is being marked on. The range comes from
+        # the task, since TCF mixes three task types with three lengths.
+        prompt = f"{text} ({low}–{high} mots)"
+        return text, prompt, (low, high)
     situation = random.choice(WRITING_SITUATIONS)
-    return situation, _build_prompt(situation, words)
+    return situation, _build_prompt(situation, words), track.word_target
 
 
 async def start_writing(
@@ -137,7 +141,7 @@ async def start_writing(
             session, user_id=user.id, due_until=day_end_utc(now, repo.user_tz(user, settings))
         )
         track = tracks.get(user.track)
-        situation, prompt = _pick_task(track, words)
+        situation, prompt, word_range = _pick_task(track, words)
         writing = await repo.create_writing(session, prompt, user_id=user.id)
         await session.commit()
         writing_id = writing.id
@@ -151,7 +155,7 @@ async def start_writing(
     if words and not exam:
         pretty = ", ".join(f"<b>{render.esc(w)}</b>" for w in words)
         lines.append(f"Используй слова: {pretty}")
-    low, high = track.word_target
+    low, high = word_range
     lines.append("")
     lines.append(
         f"Объём: {low}–{high} слов." if exam else "Напиши 2–3 предложения по-французски."
@@ -293,17 +297,18 @@ async def process_answer(
         for error in correction.errors:
             if cap_left <= 0:
                 break
+            sentence = render.sentence_around(correction.corrected_text, error.corrected)
             card = await repo.create_error_card(
                 session,
                 srs,
                 user_id=user.id,
                 kind=CardKind.error.value,
-                sentence=correction.corrected_text,
+                sentence=sentence,
                 original=error.original,
                 corrected=error.corrected,
                 err_type=error.type,
                 explanation_ru=error.explanation_ru,
-                front=render.make_gapped(correction.corrected_text, error.corrected),
+                front=render.make_gapped(sentence, error.corrected),
             )
             if card is not None:
                 created += 1

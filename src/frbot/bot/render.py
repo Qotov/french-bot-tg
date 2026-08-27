@@ -62,6 +62,27 @@ def vocab_card_back(card: Card) -> str:
     return "\n".join(lines)
 
 
+ERROR_SENTENCE_MAX = 300
+
+
+def sentence_around(text: str, span: str) -> str:
+    """The sentence containing `span`, not the whole essay.
+
+    An error card is a single-point drill. Storing a 250-word DELF text on it
+    would make the review card unreadable — and long enough to break Telegram's
+    message limit once front and back are shown together.
+    """
+    text = text.strip()
+    if len(text) <= ERROR_SENTENCE_MAX:
+        return text
+    parts = re.split(r"(?<=[.!?])\s+", text)
+    needle = span.strip().lower()
+    for part in parts:
+        if needle and needle in part.lower():
+            return part.strip()[:ERROR_SENTENCE_MAX]
+    return text[:ERROR_SENTENCE_MAX].rstrip() + "…"
+
+
 def make_gapped(text: str, span: str) -> str | None:
     """Replace the first whole-word occurrence of `span` in `text` with a gap.
 
@@ -82,10 +103,10 @@ def error_card_front(card: Card) -> str:
     label = "✍️" if card.kind == CardKind.error.value else "📚"
     front = meta.get("front") or make_gapped(card.text, meta.get("corrected", ""))
     if front:
-        return f"{label} Заполни пропуск:\n<i>{esc(front)}</i>"
+        return f"{label} Заполни пропуск:\n<i>{esc(front[:ERROR_SENTENCE_MAX])}</i>"
     # No reliable gap position: ask to correct the original fragment instead.
     original = meta.get("original") or card.text
-    return f"{label} Исправь:\n<i>{esc(original)}</i>"
+    return f"{label} Исправь:\n<i>{esc(original[:ERROR_SENTENCE_MAX])}</i>"
 
 
 def error_card_back(card: Card) -> str:
@@ -95,7 +116,7 @@ def error_card_back(card: Card) -> str:
     original = meta.get("original", "")
     if original:
         lines.append(f"❌ <s>{esc(original)}</s>")
-    lines.append(f"<i>{esc(card.text)}</i>")
+    lines.append(f"<i>{esc(card.text[:ERROR_SENTENCE_MAX])}</i>")
     explanation = meta.get("explanation_ru", "")
     if explanation:
         lines.append(f"💡 {esc(explanation)}")

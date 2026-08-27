@@ -141,6 +141,7 @@ is actually practising — the number that matters during a pilot.
 | `MODEL_TTS` | model for pronunciation audio | `gemini-3.1-flash-tts-preview` |
 | `TTS_VOICE` | prebuilt Gemini voice name | `Kore` |
 | `TTS_ENABLED` | turn pronunciation off entirely | `true` |
+| `TTS_CACHE_MAX_FILES` | cap on cached pronunciations kept on disk | `2000` |
 | `DAILY_NEW_LIMIT` | max new cards introduced per day | `15` |
 | `SESSION_MAX` | max cards per review session | `30` |
 | `REMINDER_TIME` | daily due-count reminder (HH:MM, local TZ) | `08:30` |
@@ -202,7 +203,7 @@ just copying a snapshot back.
 ## Development
 
 ```bash
-uv run pytest          # 291 tests; no network — Telegram and the LLM are faked
+uv run pytest          # 308 tests; no network — Telegram and the LLM are faked
 uv run ruff check .    # lint
 uv run ruff format .   # format
 uv run alembic upgrade head   # apply migrations manually

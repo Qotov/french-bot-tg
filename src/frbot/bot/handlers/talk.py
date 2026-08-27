@@ -169,7 +169,7 @@ async def _create_error_cards(
     said: str,
     user: User,
 ) -> int:
-    sentence = turn.corrected_fr.strip() or said
+    full_text = turn.corrected_fr.strip() or said
     created = 0
     now = datetime.now(UTC)
     async with session_factory() as session:
@@ -179,6 +179,8 @@ async def _create_error_cards(
         for error in turn.errors:
             if cap_left <= 0:
                 break
+            # The sentence carrying this error, not the whole turn.
+            sentence = render.sentence_around(full_text, error.corrected)
             card = await repo.create_error_card(
                 session,
                 srs,

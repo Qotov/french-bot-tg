@@ -21,6 +21,7 @@ SAMPLE_RATE = 24_000  # Gemini TTS output: 24 kHz, mono, 16-bit PCM
 CHANNELS = 1
 SAMPLE_WIDTH = 2
 CACHE_MAX_FILES = 2_000
+ENCODE_TIMEOUT = 20  # seconds; a wedged ffmpeg must not hold the handler
 
 
 class AudioUnavailable(Exception):
@@ -53,20 +54,42 @@ def ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None
 
 
+def opus_available() -> bool:
+    """ffmpeg on PATH is not enough — it must be built with libopus, which
+    `which` cannot see. Probe once so we never pay for audio we cannot encode.
+    """
+    if not ffmpeg_available():
+        return False
+    try:
+        probe = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-encoders"],
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return b"libopus" in probe.stdout
+
+
 def _encode_opus(wav_bytes: bytes) -> bytes:
     """Telegram voice messages must be OGG/Opus; anything else shows up as a
     file attachment instead of a playable bubble."""
-    process = subprocess.run(  # fixed argv, no shell
-        [
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-f", "wav", "-i", "pipe:0",
-            "-c:a", "libopus", "-b:a", "32k", "-ar", "48000", "-ac", "1",
-            "-f", "ogg", "pipe:1",
-        ],
-        input=wav_bytes,
-        capture_output=True,
-        check=False,
-    )
+    try:
+        process = subprocess.run(  # fixed argv, no shell
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error",
+                "-f", "wav", "-i", "pipe:0",
+                "-c:a", "libopus", "-b:a", "32k", "-ar", "48000", "-ac", "1",
+                "-f", "ogg", "pipe:1",
+            ],
+            input=wav_bytes,
+            capture_output=True,
+            check=False,
+            timeout=ENCODE_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AudioUnavailable("ffmpeg timed out") from exc
     if process.returncode != 0 or not process.stdout:
         raise AudioUnavailable(
             f"ffmpeg failed: {process.stderr.decode('utf-8', 'replace')[:200]}"
