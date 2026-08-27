@@ -6,6 +6,7 @@ number the pilot exists to measure. These alerts exist so the operator finds
 out from the bot, not from a complaint two days later.
 """
 
+import html
 import logging
 from collections import deque
 from datetime import UTC, datetime, timedelta
@@ -19,6 +20,19 @@ logger = logging.getLogger(__name__)
 ALERT_COOLDOWN = timedelta(minutes=30)
 LLM_FAILURE_WINDOW = timedelta(minutes=15)
 LLM_FAILURE_THRESHOLD = 5
+
+
+def esc(value: object) -> str:
+    """Escape anything that will be interpolated into an HTML alert."""
+    return html.escape(str(value), quote=False)
+
+
+def _strip_markup(text: str) -> str:
+    return (
+        text.replace("<b>", "").replace("</b>", "")
+        .replace("<code>", "").replace("</code>", "")
+        .replace("<i>", "").replace("</i>", "")
+    )
 
 
 class AdminAlerter:
@@ -38,8 +52,19 @@ class AdminAlerter:
             await bot.send_message(self.admin_user_id, text)
             return True
         except Exception:
-            logger.exception("could not deliver admin alert %s", kind)
-            return False
+            # An alert that cannot be delivered is worse than no alerting at
+            # all, because it is silent. Retry once as plain text: the usual
+            # cause is stray markup in an exception string breaking the HTML
+            # parse, and the message itself is still worth having.
+            logger.warning("HTML admin alert %s rejected; retrying as plain text", kind)
+            try:
+                await bot.send_message(
+                    self.admin_user_id, _strip_markup(text), parse_mode=None
+                )
+                return True
+            except Exception:
+                logger.exception("could not deliver admin alert %s", kind)
+                return False
 
     async def record_llm_failure(self, bot: Bot, detail: str) -> None:
         """Alert when LLM calls start failing in bulk — an expired key or an
@@ -54,7 +79,7 @@ class AdminAlerter:
                 "llm",
                 f"🚨 <b>{len(recent)} ошибок LLM за "
                 f"{int(LLM_FAILURE_WINDOW.total_seconds() // 60)} минут.</b>\n"
-                f"Последняя: {detail[:300]}\n\n"
+                f"Последняя: {esc(detail[:300])}\n\n"
                 f"Проверь ключ Gemini и квоту — сейчас у людей не работает "
                 f"почти всё, кроме повторений.",
             )

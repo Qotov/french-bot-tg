@@ -25,6 +25,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from frbot.bot import render
 from frbot.bot.alerts import AdminAlerter
+from frbot.bot.alerts import esc as alerts_esc
 from frbot.bot.handlers.write import start_writing
 from frbot.bot.keyboards import start_review_kb
 from frbot.config import Settings
@@ -410,7 +411,9 @@ async def backup_database(
         logger.exception("backup failed")
         if bot is not None and alerter is not None:
             await alerter.send(
-                bot, "backup", f"🚨 <b>Бэкап не удался</b>\n<code>{str(exc)[:300]}</code>"
+                bot,
+                "backup",
+                f"🚨 <b>Бэкап не удался</b>\n<code>{alerts_esc(str(exc)[:300])}</code>",
             )
         return
     if dst is None:

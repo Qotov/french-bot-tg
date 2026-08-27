@@ -115,7 +115,7 @@ async def start_writing(
     now = datetime.now(UTC)
     async with session_factory() as session:
         words = await repo.pick_writing_words(
-            session, user_id=user.id, due_until=day_end_utc(now, settings.tz)
+            session, user_id=user.id, due_until=day_end_utc(now, repo.user_tz(user, settings))
         )
         situation = random.choice(WRITING_SITUATIONS)
         prompt = _build_prompt(situation, words)
@@ -256,7 +256,7 @@ async def process_answer(
             writing.corrections = correction.model_dump()
 
         cap_left = repo.ERROR_CARDS_DAILY_CAP - await repo.count_error_cards_created_since(
-            session, user_id=user.id, since=day_start_utc(now, settings.tz)
+            session, user_id=user.id, since=day_start_utc(now, repo.user_tz(user, settings))
         )
         for error in correction.errors:
             if cap_left <= 0:

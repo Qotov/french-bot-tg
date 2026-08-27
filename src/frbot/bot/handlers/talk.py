@@ -174,7 +174,7 @@ async def _create_error_cards(
     now = datetime.now(UTC)
     async with session_factory() as session:
         cap_left = repo.ERROR_CARDS_DAILY_CAP - await repo.count_error_cards_created_since(
-            session, user_id=user.id, since=day_start_utc(now, settings.tz)
+            session, user_id=user.id, since=day_start_utc(now, repo.user_tz(user, settings))
         )
         for error in turn.errors:
             if cap_left <= 0:

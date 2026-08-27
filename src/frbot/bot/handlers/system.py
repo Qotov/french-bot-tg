@@ -1,6 +1,8 @@
 """/start (registration by invite), /help, /level, /feedback."""
 
+import asyncio
 import logging
+from datetime import UTC, datetime
 
 from aiogram import F, Router
 from aiogram.enums import ChatAction
@@ -10,6 +12,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from frbot.bot import render
+from frbot.bot.alerts import AdminAlerter
 from frbot.bot.handlers.topic import build_starter_deck
 from frbot.bot.telegram_utils import safe_answer, safe_edit_text
 from frbot.config import Settings
@@ -55,6 +58,7 @@ LEVEL_HINTS = {
 }
 
 BUILDING_DECK_TEXT = "Собираю тебе стартовый набор карточек, это займёт секунд десять…"
+STARTER_DECK_TIMEOUT = 60  # seconds; the per-user lock is held for this long
 
 FIRST_STEPS_TEXT = (
     "Дальше всё в твоих руках:\n\n"
@@ -151,6 +155,7 @@ async def on_level_chosen(
     srs: SrsScheduler,
     settings: Settings,
     usage: UsageLimiter,
+    alerter: AdminAlerter,
 ) -> None:
     level = query.data.split(":")[1]
     async with session_factory() as session:
@@ -172,7 +177,23 @@ async def on_level_chosen(
     if already == 0:
         await query.message.answer(BUILDING_DECK_TEXT)
         await query.message.bot.send_chat_action(query.message.chat.id, ChatAction.TYPING)
-        created = await build_starter_deck(user, session_factory, llm, srs, settings, usage)
+        # Bounded: this runs while the per-user lock is held, so it must not be
+        # able to block the participant's own messages for minutes.
+        try:
+            async with asyncio.timeout(STARTER_DECK_TIMEOUT):
+                created = await build_starter_deck(
+                    user,
+                    session_factory,
+                    llm,
+                    srs,
+                    settings,
+                    usage,
+                    alerter,
+                    query.message.bot,
+                )
+        except TimeoutError:
+            logger.warning("starter deck timed out for user %d", user.id)
+            created = []
         if created:
             preview = ", ".join(render.esc(lemma) for lemma in created[:6])
             await query.message.answer(
@@ -225,8 +246,10 @@ async def handle_feedback(
 DELETE_CONFIRM_TEXT = (
     "⚠️ Это удалит <b>всё</b>: карточки, историю повторений, тексты и сам аккаунт. "
     "Отменить будет нельзя.\n\n"
-    "Если уверен(а), пришли одним сообщением: <code>УДАЛИТЬ</code>"
+    "Если уверен(а), пришли одним сообщением: <code>УДАЛИТЬ</code>\n"
+    "Передумал(а) — просто напиши что угодно другое или /stop."
 )
+DELETE_CONFIRM_TTL = 300  # seconds; after that the armed confirmation lapses
 DELETE_WORD = "УДАЛИТЬ"
 DELETE_DONE_TEXT = (
     "Готово — всё удалено: {cards} карточек, {reviews} повторений, {writings} текстов.\n"
@@ -241,6 +264,7 @@ class DeleteStates(StatesGroup):
 
 async def cmd_delete_me(message: Message, state: FSMContext) -> None:
     await state.set_state(DeleteStates.confirming)
+    await state.update_data(delete_armed_at=datetime.now(UTC).timestamp())
     await message.answer(DELETE_CONFIRM_TEXT)
 
 
@@ -250,8 +274,13 @@ async def handle_delete_confirmation(
     user: User,
     session_factory: SessionFactory,
 ) -> None:
+    armed_at = (await state.get_data()).get("delete_armed_at", 0)
     await state.clear()
-    if (message.text or "").strip().upper() != DELETE_WORD:
+    expired = datetime.now(UTC).timestamp() - armed_at > DELETE_CONFIRM_TTL
+    if expired or (message.text or "").strip().upper() != DELETE_WORD:
+        # Anything that is not the exact word cancels — and a confirmation left
+        # armed for minutes must not delete an account because the next message
+        # happened to be that word.
         await message.answer(DELETE_CANCELLED_TEXT)
         return
     async with session_factory() as session:

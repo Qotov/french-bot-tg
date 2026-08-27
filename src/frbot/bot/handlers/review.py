@@ -62,7 +62,7 @@ async def start_session(
             session,
             user_id=user.id,
             now=now,
-            tz=settings.tz,
+            tz=cfg.tz,
             session_max=cfg.session_max,
             daily_new_limit=cfg.daily_new_limit,
         )
@@ -238,7 +238,9 @@ async def _finish(
         now = datetime.now(UTC)
         async with session_factory() as session:
             tomorrow_due = await repo.count_due(
-                session, user_id=user.id, until=tomorrow_end_utc(now, settings.tz)
+                session,
+                user_id=user.id,
+                until=tomorrow_end_utc(now, repo.user_tz(user, settings)),
             )
 
     summary = (

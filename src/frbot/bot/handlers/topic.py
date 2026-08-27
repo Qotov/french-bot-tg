@@ -18,6 +18,7 @@ from aiogram.types import CallbackQuery, Message
 
 from frbot.bot import render
 from frbot.bot.alerts import AdminAlerter
+from frbot.bot.alerts import esc as alerts_esc
 from frbot.bot.keyboards import topic_select_kb
 from frbot.bot.telegram_utils import safe_answer, safe_edit_text
 from frbot.config import Settings
@@ -312,6 +313,8 @@ async def build_starter_deck(
     srs: SrsScheduler,
     settings: Settings,
     usage: UsageLimiter | None = None,
+    alerter: AdminAlerter | None = None,
+    bot: object | None = None,
 ) -> list[str]:
     """Fill a brand-new participant's deck so their first /review has content.
 
@@ -323,8 +326,14 @@ async def build_starter_deck(
         word_list = await llm.topic_words(
             STARTER_TOPIC, STARTER_COUNT, [], model=settings.model_fast, level=user.level
         )
-    except LLMError:
+    except Exception as exc:
+        # Broad on purpose: onboarding must never dead-end. The transport can
+        # raise things that are not LLMError (aiohttp errors, for one), and a
+        # stranded "собираю набор…" with no follow-up is the worst first
+        # impression the product can make.
         logger.exception("starter deck generation failed for user %d", user.id)
+        if alerter is not None and bot is not None:
+            await alerter.record_llm_failure(bot, f"starter deck: {exc}")
         return []
 
     semaphore = asyncio.Semaphore(ENRICH_CONCURRENCY)
@@ -335,25 +344,41 @@ async def build_starter_deck(
                 return LLMError("daily limit")
             try:
                 return await llm.enrich(lemma, model=settings.model_fast, level=user.level)
-            except LLMError as exc:
+            except Exception as exc:  # transport errors are not all LLMError
                 return exc
 
     words = [w.lemma for w in word_list.words]
-    results = await asyncio.gather(*(enrich_one(w) for w in words))
+    results = await asyncio.gather(
+        *(enrich_one(w) for w in words), return_exceptions=True
+    )
 
     created: list[str] = []
-    async with session_factory() as session:
-        for lemma, result in zip(words, results, strict=True):
-            if isinstance(result, Exception):
-                continue
-            if await repo.find_card_by_lemma(session, result.lemma, user_id=user.id):
-                continue
-            await repo.create_vocab_card(
-                session, srs, user_id=user.id, text=lemma, enrichment=result.model_dump()
+    failures = 0
+    try:
+        async with session_factory() as session:
+            for lemma, result in zip(words, results, strict=True):
+                if isinstance(result, BaseException):
+                    failures += 1
+                    continue
+                if await repo.find_card_by_lemma(session, result.lemma, user_id=user.id):
+                    continue
+                await repo.create_vocab_card(
+                    session, srs, user_id=user.id, text=lemma, enrichment=result.model_dump()
+                )
+                created.append(result.lemma)
+            await session.commit()
+    except Exception as exc:
+        logger.exception("storing the starter deck failed for user %d", user.id)
+        if alerter is not None and bot is not None:
+            await alerter.send(
+                bot, "starter-db", f"🚨 Стартовый набор не сохранился: {alerts_esc(exc)}"
             )
-            created.append(result.lemma)
-        await session.commit()
-    logger.info("starter deck for user %d: %d cards", user.id, len(created))
+        return []
+    logger.info(
+        "starter deck for user %d: %d cards, %d failed", user.id, len(created), failures
+    )
+    if failures and alerter is not None and bot is not None:
+        await alerter.record_llm_failure(bot, f"starter deck: {failures} enrichments failed")
     return created
 
 

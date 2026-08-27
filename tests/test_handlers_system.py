@@ -155,14 +155,16 @@ def _starter_llm():
 
 
 async def test_level_choice_is_saved_and_builds_a_starter_deck(
-    fake_bot, session_factory, settings, user, usage
+    fake_bot, session_factory, settings, user, usage, alerter
 ):
     """Day one must not be an empty deck — that is the top churn reason."""
     from frbot.srs.scheduler import SrsScheduler
 
     llm, words, _ = _starter_llm()
     query = make_callback_query("level:B2", bot=fake_bot)
-    await on_level_chosen(query, user, session_factory, llm, SrsScheduler(0.9), settings, usage)
+    await on_level_chosen(
+        query, user, session_factory, llm, SrsScheduler(0.9), settings, usage, alerter
+    )
 
     async with session_factory() as session:
         row = await repo.get_user(session, user.id)
@@ -179,7 +181,7 @@ async def test_level_choice_is_saved_and_builds_a_starter_deck(
 
 
 async def test_level_choice_survives_a_failed_starter_deck(
-    fake_bot, session_factory, settings, user, usage
+    fake_bot, session_factory, settings, user, usage, alerter
 ):
     from frbot.llm.client import LLMError
     from frbot.srs.scheduler import SrsScheduler
@@ -194,6 +196,7 @@ async def test_level_choice_survives_a_failed_starter_deck(
         SrsScheduler(0.9),
         settings,
         usage,
+        alerter,
     )
     texts = [m.text for m in fake_bot.session.sent_messages]
     assert any("Не получилось собрать" in t for t in texts)
@@ -201,7 +204,7 @@ async def test_level_choice_survives_a_failed_starter_deck(
 
 
 async def test_starter_deck_is_skipped_when_the_deck_is_not_empty(
-    fake_bot, session_factory, settings, user, usage
+    fake_bot, session_factory, settings, user, usage, alerter
 ):
     from frbot.srs.scheduler import SrsScheduler
     from tests.fakes import add_vocab_card
@@ -216,6 +219,7 @@ async def test_starter_deck_is_skipped_when_the_deck_is_not_empty(
         SrsScheduler(0.9),
         settings,
         usage,
+        alerter,
     )
     assert llm.topic_calls == []  # no pack for someone who already has cards
 

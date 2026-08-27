@@ -115,7 +115,10 @@ async def on_timezone_chosen(
     async with session_factory() as session:
         await repo.set_user_setting(session, user_id=user.id, key="TZ", value=zone)
         await session.commit()
-    await state.clear()
+    # Only end the settings flow. A tap on an old timezone keyboard must not
+    # cancel whatever session the user is in now.
+    if await state.get_state() == SettingsStates.awaiting_value.state:
+        await state.clear()
     logger.info("user %d set timezone to %s", user.id, zone)
     if isinstance(query.message, Message):
         await safe_edit_text(query.message, f"🕒 Часовой пояс: <b>{zone}</b> ✅")

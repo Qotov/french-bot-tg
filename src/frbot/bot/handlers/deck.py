@@ -34,9 +34,13 @@ KIND_ICONS = {
 async def _page(session_factory: SessionFactory, user: User, offset: int) -> tuple[str, object]:
     async with session_factory() as session:
         total = await repo.count_cards(session, user_id=user.id)
+        if total == 0:
+            return EMPTY_TEXT, None
+        # Deleting the last card of the last page would otherwise leave the
+        # user staring at an empty list with no way back.
+        last_page_offset = ((total - 1) // repo.DECK_PAGE_SIZE) * repo.DECK_PAGE_SIZE
+        offset = min(max(offset, 0), last_page_offset)
         cards = await repo.list_cards_page(session, user_id=user.id, offset=offset)
-    if total == 0:
-        return EMPTY_TEXT, None
 
     shown_to = min(offset + len(cards), total)
     lines = [f"📚 <b>Твоя колода</b> — {total} карточек ({offset + 1}–{shown_to})", ""]

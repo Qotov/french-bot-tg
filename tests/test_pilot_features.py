@@ -357,3 +357,152 @@ async def test_delivered_set_does_not_grow_without_bound(fake_bot, session_facto
         assert _mark_sent(1, "reminder", base + timedelta(days=offset)) is True
     # Only the recent window is retained.
     assert len(_sent_today) <= 3
+
+
+# --------------------------------------- onboarding must never dead-end
+
+
+async def test_starter_deck_survives_a_non_llm_transport_error(
+    fake_bot, session_factory, settings, user, usage, alerter
+):
+    """The transport can raise things that are not LLMError. Onboarding must
+    still reach the first-steps message — it carries the privacy notice and is
+    the only place the learner is told what to do next."""
+    from frbot.bot.handlers.system import on_level_chosen
+    from frbot.srs.scheduler import SrsScheduler
+    from tests.fakes import FakeLLM
+
+    llm = FakeLLM(topic_results=[RuntimeError("aiohttp: payload truncated")])
+    await on_level_chosen(
+        make_callback_query("level:B1", bot=fake_bot),
+        user,
+        session_factory,
+        llm,
+        SrsScheduler(0.9),
+        settings,
+        usage,
+        alerter,
+    )
+    texts = [m.text or "" for m in fake_bot.session.sent_messages]
+    assert any("Не получилось собрать" in t for t in texts)
+    assert any("delete_me" in t for t in texts)  # first-steps + privacy delivered
+
+
+async def test_starter_deck_survives_a_failing_enrichment(
+    fake_bot, session_factory, settings, user, usage, alerter
+):
+    from frbot.bot.handlers.topic import build_starter_deck
+    from frbot.llm.schemas import Enrichment, TopicWordList
+    from frbot.srs.scheduler import SrsScheduler
+    from tests.fakes import FakeLLM, enrichment_dict
+
+    llm = FakeLLM(
+        topic_results=[
+            TopicWordList.model_validate(
+                {"words": [{"lemma": w, "translation_ru": "…"} for w in ("un", "deux")]}
+            )
+        ],
+        enrich_results=[
+            RuntimeError("connection reset"),
+            Enrichment.model_validate(enrichment_dict("deux")),
+        ],
+    )
+    created = await build_starter_deck(
+        user, session_factory, llm, SrsScheduler(0.9), settings, usage, alerter, fake_bot
+    )
+    assert created == ["deux"]  # the good one still lands
+
+
+# ------------------------------------------- alerts must actually arrive
+
+
+async def test_alert_with_markup_in_the_text_still_reaches_the_admin(fake_bot):
+    """Exception strings contain <, > and &. An alert that Telegram rejects as
+    bad HTML is worse than no alerting, because the failure is silent."""
+    from aiogram.methods import SendMessage
+
+    from frbot.bot.alerts import AdminAlerter
+
+    original = fake_bot.session._result_for
+
+    def reject_html(method):
+        if isinstance(method, SendMessage) and method.parse_mode is not None:
+            raise RuntimeError("Bad Request: can't parse entities")
+        return original(method)
+
+    fake_bot.session._result_for = reject_html
+    alerter = AdminAlerter(ALLOWED_USER_ID)
+    delivered = await alerter.send(
+        fake_bot, "kind", "<b>Ошибка</b>\n<code>KeyError: <unclosed & broken</code>"
+    )
+    assert delivered is True
+    sent = fake_bot.session.sent("SendMessage")[-1]
+    assert sent.parse_mode is None  # fell back to plain text
+    assert "KeyError" in sent.text
+
+
+def test_alert_escaping_neutralises_markup():
+    from frbot.bot.alerts import esc
+
+    assert esc("<script>&") == "&lt;script&gt;&amp;"
+
+
+# --------------------------------------------- deck paging and delete UX
+
+
+async def test_deleting_the_last_card_of_a_page_does_not_strand_the_user(
+    fake_bot, session_factory, user
+):
+    from frbot.bot.handlers import deck as deck_mod
+
+    ids = [await add_vocab_card(session_factory, f"mot-{i}") for i in range(9)]
+    # Page 2 holds exactly one card; delete it and the view must fall back.
+    await deck_mod.on_delete(
+        make_callback_query(f"deck:del:{ids[0]}:8", bot=fake_bot), user, session_factory
+    )
+    text = fake_bot.session.sent("EditMessageText")[-1].text
+    assert "Твоя колода" in text
+    assert "8 карточек" in text
+
+
+async def test_stale_delete_confirmation_does_not_erase_the_account(
+    fake_bot, session_factory, user
+):
+    from frbot.bot.handlers.system import (
+        DeleteStates,
+        handle_delete_confirmation,
+    )
+
+    await add_vocab_card(session_factory, "maison")
+    state = state_for(fake_bot)
+    await state.set_state(DeleteStates.confirming)
+    await state.update_data(delete_armed_at=0)  # armed long ago
+
+    await handle_delete_confirmation(
+        make_message("УДАЛИТЬ", bot=fake_bot), state, user, session_factory
+    )
+    async with session_factory() as session:
+        assert await repo.get_user(session, user.id) is not None
+        assert await repo.count_cards(session, user_id=user.id) == 1
+
+
+async def test_timezone_tap_does_not_cancel_an_unrelated_session(
+    fake_bot, session_factory, settings, user
+):
+    from frbot.bot.handlers.review import ReviewStates
+    from frbot.bot.handlers.settings import on_timezone_chosen
+
+    state = state_for(fake_bot)
+    await state.set_state(ReviewStates.reviewing)
+    await state.set_data({"queue": [1], "index": 0, "total": 1, "reviewed": 0, "again": 0})
+
+    await on_timezone_chosen(
+        make_callback_query("tz:Europe/Berlin", bot=fake_bot),
+        state,
+        user,
+        session_factory,
+        settings,
+    )
+    assert await state.get_state() == ReviewStates.reviewing.state
+    async with session_factory() as session:
+        assert (await repo.get_user(session, user.id)).tz == "Europe/Berlin"

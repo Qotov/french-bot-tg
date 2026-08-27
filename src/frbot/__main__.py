@@ -11,7 +11,7 @@ from aiogram.fsm.storage.memory import MemoryStorage, SimpleEventIsolation
 from aiogram.types import BotCommand, ErrorEvent
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from frbot.bot import pronounce
+from frbot.bot import alerts, pronounce
 from frbot.bot.alerts import AdminAlerter
 from frbot.bot.audio import VoiceCache, cache_dir
 from frbot.bot.handlers import (
@@ -90,7 +90,8 @@ async def on_unhandled_error(event: ErrorEvent, alerter: AdminAlerter) -> bool:
             bot,
             f"handler:{type(event.exception).__name__}",
             f"🚨 <b>Ошибка в обработчике</b>\n"
-            f"<code>{type(event.exception).__name__}: {str(event.exception)[:400]}</code>\n\n"
+            f"<code>{alerts.esc(type(event.exception).__name__)}: "
+            f"{alerts.esc(str(event.exception)[:400])}</code>\n\n"
             f"Бот продолжает работать. Подробности в логах.",
         )
     return True
