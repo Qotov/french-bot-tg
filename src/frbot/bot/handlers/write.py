@@ -19,6 +19,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message
 
+from frbot import tracks
 from frbot.bot import render
 from frbot.bot.alerts import AdminAlerter
 from frbot.bot.telegram_utils import (
@@ -40,6 +41,13 @@ logger = logging.getLogger(__name__)
 FAIL_TEXT = "⚠️ Не получилось проверить текст. Пришли его ещё раз через минуту."
 VOICE_FAIL_TEXT = "⚠️ Не получилось разобрать голосовое. Скажи ещё раз или напиши текстом."
 ANSWER_MAX_LEN = 1500
+# An exam essay is far longer than a three-sentence exercise; the cap has to
+# follow the task or the bot would reject exactly the work it asked for.
+EXAM_ANSWER_MAX_LEN = 4000
+
+
+def exam_answer_limit(user: User) -> int:
+    return EXAM_ANSWER_MAX_LEN if tracks.is_exam(user.track) else ANSWER_MAX_LEN
 
 WRITING_SITUATIONS = [
     "Raconte ce que tu as fait hier soir.",
@@ -105,6 +113,17 @@ def _build_prompt(situation: str, words: list[str]) -> str:
     return situation
 
 
+def _pick_task(track: tracks.Track, words: list[str]) -> tuple[str, str]:
+    """Returns (situation shown to the learner, prompt sent to the corrector)."""
+    if tracks.is_exam(track.slug) and track.tasks:
+        situation = random.choice(track.tasks)
+        # Exam tasks are self-contained; forcing vocabulary into them would
+        # break the format the learner is being marked on.
+        return situation, situation
+    situation = random.choice(WRITING_SITUATIONS)
+    return situation, _build_prompt(situation, words)
+
+
 async def start_writing(
     answer: Callable[..., Awaitable[Message]],
     state: FSMContext,
@@ -117,17 +136,26 @@ async def start_writing(
         words = await repo.pick_writing_words(
             session, user_id=user.id, due_until=day_end_utc(now, repo.user_tz(user, settings))
         )
-        situation = random.choice(WRITING_SITUATIONS)
-        prompt = _build_prompt(situation, words)
+        track = tracks.get(user.track)
+        situation, prompt = _pick_task(track, words)
         writing = await repo.create_writing(session, prompt, user_id=user.id)
         await session.commit()
         writing_id = writing.id
 
-    lines = [f"✍️ <b>Задание:</b> {render.esc(situation)}"]
-    if words:
+    exam = tracks.is_exam(track.slug)
+    header = f"✍️ <b>{render.esc(track.title)}</b>" if exam else "✍️ <b>Задание:</b>"
+    lines = [f"{header} {render.esc(situation)}" if not exam else header]
+    if exam:
+        lines.append("")
+        lines.append(render.esc(situation))
+    if words and not exam:
         pretty = ", ".join(f"<b>{render.esc(w)}</b>" for w in words)
         lines.append(f"Используй слова: {pretty}")
-    lines.append("Напиши 2–3 предложения по-французски.")
+    low, high = track.word_target
+    lines.append("")
+    lines.append(
+        f"Объём: {low}–{high} слов." if exam else "Напиши 2–3 предложения по-французски."
+    )
 
     # Send BEFORE arming the state: if the send fails (blocked bot, network),
     # the user must not be left waiting to answer a prompt they never saw.
@@ -221,10 +249,10 @@ async def process_answer(
     usage: UsageLimiter,
     alerter: AdminAlerter,
 ) -> None:
-    if len(answer_text) > ANSWER_MAX_LEN:
+    limit = exam_answer_limit(user)
+    if len(answer_text) > limit:
         await message.answer(
-            f"Слишком длинно — нужно всего 2–3 предложения (до {ANSWER_MAX_LEN} символов). "
-            f"Сократи и пришли ещё раз."
+            f"Слишком длинно (до {limit} символов). Сократи и пришли ещё раз."
         )
         return
     data = await state.get_data()
@@ -236,7 +264,11 @@ async def process_answer(
         return
     try:
         correction = await llm.correct(
-            prompt, answer_text, model=settings.model_smart, level=user.level
+            prompt,
+            answer_text,
+            model=settings.model_smart,
+            level=user.level,
+            criteria=tracks.get(user.track).criteria_ru,
         )
     except LLMError:
         logger.exception("correction failed")

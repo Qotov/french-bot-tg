@@ -13,6 +13,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from frbot.bot import render
 from frbot.bot.alerts import AdminAlerter
+from frbot.bot.handlers.placement import cmd_placement
 from frbot.bot.handlers.topic import build_starter_deck
 from frbot.bot.telegram_utils import safe_answer, safe_edit_text
 from frbot.config import Settings
@@ -36,6 +37,8 @@ HELP_TEXT = (
     "/stats — твой прогресс\n"
     "/cards — моя колода: посмотреть, поставить на паузу, удалить\n"
     "/level — уровень (A2 / B1 / B2)\n"
+    "/placement — тест на уровень (3 минуты)\n"
+    "/track — цель: DELF B1 / DELF B2 / TCF\n"
     "/settings — время напоминаний и лимиты\n"
     "/feedback — написать автору (я читаю всё)\n"
     "/stop — прервать текущую сессию\n"
@@ -87,6 +90,7 @@ def level_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text=f"{lvl} — {LEVEL_HINTS[lvl]}", callback_data=f"level:{lvl}")]
             for lvl in LEVELS
         ]
+        + [[InlineKeyboardButton(text="🎯 Не знаю — пройти тест", callback_data="level:test")]]
     )
 
 
@@ -149,6 +153,7 @@ async def cmd_level(message: Message, user: User) -> None:
 
 async def on_level_chosen(
     query: CallbackQuery,
+    state: FSMContext,
     user: User,
     session_factory: SessionFactory,
     llm: LLMClient,
@@ -158,6 +163,13 @@ async def on_level_chosen(
     alerter: AdminAlerter,
 ) -> None:
     level = query.data.split(":")[1]
+    if level == "test":
+        # They would rather be measured than guess — the better answer.
+        await safe_answer(query)
+        if isinstance(query.message, Message):
+            await safe_edit_text(query.message, "🎯 Определим уровень тестом.")
+            await cmd_placement(query.message, state)
+        return
     async with session_factory() as session:
         ok = await repo.set_user_level(session, user.id, level)
         await session.commit()

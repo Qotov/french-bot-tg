@@ -375,6 +375,7 @@ async def test_starter_deck_survives_a_non_llm_transport_error(
     llm = FakeLLM(topic_results=[RuntimeError("aiohttp: payload truncated")])
     await on_level_chosen(
         make_callback_query("level:B1", bot=fake_bot),
+        state_for(fake_bot),
         user,
         session_factory,
         llm,

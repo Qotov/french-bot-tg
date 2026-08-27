@@ -124,6 +124,7 @@ class User(Base):
     is_admin: Mapped[bool] = mapped_column(default=False)
     active: Mapped[bool] = mapped_column(default=True)
     tz: Mapped[str | None] = mapped_column(nullable=True)  # IANA name
+    track: Mapped[str | None] = mapped_column(nullable=True)  # exam track slug
     reminder_time: Mapped[str | None] = mapped_column(nullable=True)
     writing_time: Mapped[str | None] = mapped_column(nullable=True)
     daily_new_limit: Mapped[int | None] = mapped_column(nullable=True)

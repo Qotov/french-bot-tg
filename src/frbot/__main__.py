@@ -19,11 +19,13 @@ from frbot.bot.handlers import (
     capture,
     deck,
     drill,
+    placement,
     review,
     stats,
     system,
     talk,
     topic,
+    track,
     write,
 )
 from frbot.bot.handlers import settings as settings_handlers
@@ -62,6 +64,8 @@ def build_dispatcher(
     dp.include_router(review.create_router())
     dp.include_router(stats.create_router())
     dp.include_router(deck.create_router())
+    dp.include_router(placement.create_router())
+    dp.include_router(track.create_router())
     dp.include_router(pronounce.create_router())
     dp.include_router(write.create_router())
     dp.include_router(drill.create_router())
@@ -113,6 +117,8 @@ BOT_COMMANDS = [
     BotCommand(command="stats", description="Мой прогресс"),
     BotCommand(command="cards", description="Моя колода"),
     BotCommand(command="level", description="Уровень (A2/B1/B2)"),
+    BotCommand(command="placement", description="Тест на уровень"),
+    BotCommand(command="track", description="Цель: DELF / TCF"),
     BotCommand(command="settings", description="Настройки"),
     BotCommand(command="feedback", description="Написать автору"),
     BotCommand(command="stop", description="Прервать сессию"),

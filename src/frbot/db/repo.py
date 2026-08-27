@@ -123,6 +123,14 @@ async def delete_user_data(session: AsyncSession, user_id: int) -> dict[str, int
     return counts
 
 
+async def set_user_track(session: AsyncSession, user_id: int, track: str) -> bool:
+    user = await session.get(User, user_id)
+    if user is None:
+        return False
+    user.track = track
+    return True
+
+
 async def set_user_level(session: AsyncSession, user_id: int, level: str) -> bool:
     if level not in LEVELS:
         return False
@@ -517,7 +525,9 @@ async def ensure_drill_topics_seeded(session: AsyncSession) -> None:
     logger.info("seeded %d drill topics", len(SEED_TOPICS))
 
 
-async def get_topic_for_week(session: AsyncSession, *, today: date) -> DrillTopic | None:
+async def get_topic_for_week(
+    session: AsyncSession, *, today: date, track: str | None = None
+) -> DrillTopic | None:
     """The cohort's grammar topic for the ISO week containing `today`.
 
     Deterministic (no stored rotation pointer), so everyone in the pilot drills
@@ -529,6 +539,12 @@ async def get_topic_for_week(session: AsyncSession, *, today: date) -> DrillTopi
     )
     if not topics:
         return None
+    if track:
+        from frbot import tracks as tracks_module
+
+        by_slug = {t.slug: t for t in topics}
+        ordered_slugs = tracks_module.ordered_topic_slugs(track, list(by_slug))
+        topics = [by_slug[slug] for slug in ordered_slugs]
     return topics[today.isocalendar().week % len(topics)]
 
 

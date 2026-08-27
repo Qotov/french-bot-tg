@@ -54,7 +54,7 @@ async def cmd_drill(
     today = datetime.now(UTC).astimezone(ZoneInfo(settings.tz)).date()
     async with session_factory() as session:
         await repo.ensure_drill_topics_seeded(session)
-        topic = await repo.get_topic_for_week(session, today=today)
+        topic = await repo.get_topic_for_week(session, today=today, track=user.track)
         if topic is None:
             await message.answer(FAIL_TEXT)
             return

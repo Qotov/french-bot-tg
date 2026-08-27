@@ -134,6 +134,17 @@ async def test_start_for_existing_user_shows_help_and_refreshes_chat_id(
 # ------------------------------------------------------------------- level
 
 
+def _placement_state(bot):
+    from aiogram.fsm.context import FSMContext
+    from aiogram.fsm.storage.base import StorageKey
+    from aiogram.fsm.storage.memory import MemoryStorage
+
+    return FSMContext(
+        storage=MemoryStorage(),
+        key=StorageKey(bot_id=bot.id, chat_id=ALLOWED_USER_ID, user_id=ALLOWED_USER_ID),
+    )
+
+
 def _starter_llm():
     """An LLM that can produce a starter deck (topic list + enrichments)."""
     from frbot.llm.schemas import Enrichment, TopicWordList
@@ -163,7 +174,15 @@ async def test_level_choice_is_saved_and_builds_a_starter_deck(
     llm, words, _ = _starter_llm()
     query = make_callback_query("level:B2", bot=fake_bot)
     await on_level_chosen(
-        query, user, session_factory, llm, SrsScheduler(0.9), settings, usage, alerter
+        query,
+        _placement_state(fake_bot),
+        user,
+        session_factory,
+        llm,
+        SrsScheduler(0.9),
+        settings,
+        usage,
+        alerter,
     )
 
     async with session_factory() as session:
@@ -190,6 +209,7 @@ async def test_level_choice_survives_a_failed_starter_deck(
     llm = FakeLLM(topic_results=[LLMError("down")])
     await on_level_chosen(
         make_callback_query("level:A2", bot=fake_bot),
+        _placement_state(fake_bot),
         user,
         session_factory,
         llm,
@@ -213,6 +233,7 @@ async def test_starter_deck_is_skipped_when_the_deck_is_not_empty(
     llm, _, _ = _starter_llm()
     await on_level_chosen(
         make_callback_query("level:B1", bot=fake_bot),
+        _placement_state(fake_bot),
         user,
         session_factory,
         llm,

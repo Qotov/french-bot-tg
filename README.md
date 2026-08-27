@@ -43,6 +43,8 @@ Docs: [build spec](docs/TASK.md) · [running a pilot](docs/PILOT.md).
 | `/settings` | change your timezone, reminder/writing times and limits |
 | `/stop` | cancel the current dialogue/session |
 | `/level` | switch level (A2 / B1 / B2) — recalibrates every AI prompt |
+| `/placement` | 18-question test that measures your level in ~3 minutes |
+| `/track` | set an exam goal: DELF B1, DELF B2, TCF — or stay general |
 | `/delete_me` | erase your account and all your data |
 | `/feedback` | write to the bot's author |
 | `/help` | command reference |
@@ -66,8 +68,23 @@ person sets both in `/settings`, and a change takes effect within the minute.
 The weekly grammar topic is shared by the whole cohort and derived from the ISO
 week number, so everyone drills the same thing at the same time.
 
-New participants get a **starter deck** the moment they pick their level, so
-their first `/review` has real content instead of an empty queue.
+New participants get a **starter deck** the moment they pick their level (or
+finish the placement test), so their first `/review` has real content instead
+of an empty queue.
+
+**Levels and goals.** `/placement` runs an 18-question test — six items per
+band, targeting the structures that actually separate A2/B1/B2 for a
+Russian-speaking learner — and sets the level from the highest band the learner
+actually controls. `/track` sets an exam goal: on DELF B1, DELF B2 or TCF the
+writing task takes the exam's own format and length, corrections are weighed by
+that exam's marking criteria, and the weekly grammar rotation leads with what
+the exam tests.
+
+**Pronunciation.** 🔊 uses Gemini TTS, converted to OGG/Opus so Telegram plays
+it as a voice message. Each distinct phrase is synthesised once and cached for
+the whole cohort, so replays are free. Needs `ffmpeg` on the host
+(`apt install ffmpeg`); without it the button degrades to a short message and
+startup logs a warning.
 
 The operator also gets a **daily heartbeat** (09:00) with the roster and the two
 retention numbers, plus immediate alerts if handlers start throwing or LLM calls
@@ -121,6 +138,9 @@ is actually practising — the number that matters during a pilot.
 | `DB_URL` | SQLAlchemy async URL | `sqlite+aiosqlite:///data/frbot.db` |
 | `MODEL_FAST` | model for enrichment, cloze, topic packs, voice transcription | `gemini-3.5-flash-lite` |
 | `MODEL_SMART` | model for writing correction and /talk conversation | `gemini-3.5-flash-lite` |
+| `MODEL_TTS` | model for pronunciation audio | `gemini-3.1-flash-tts-preview` |
+| `TTS_VOICE` | prebuilt Gemini voice name | `Kore` |
+| `TTS_ENABLED` | turn pronunciation off entirely | `true` |
 | `DAILY_NEW_LIMIT` | max new cards introduced per day | `15` |
 | `SESSION_MAX` | max cards per review session | `30` |
 | `REMINDER_TIME` | daily due-count reminder (HH:MM, local TZ) | `08:30` |
@@ -168,7 +188,8 @@ Long polling only — no inbound ports, no TLS, no reverse proxy.
 
 Everything lives in one SQLite file, `data/frbot.db` (gitignored): participants,
 invites, cards with their FSRS state, review log, writings with corrections,
-and drill topics. Every card, review, and writing is owned by exactly one user;
+and drill topics, plus a `tts/` cache of synthesised pronunciations. Every
+card, review, and writing is owned by exactly one user;
 the query layer requires an explicit owner on every read, so no participant can
 see another's deck.
 
@@ -181,7 +202,7 @@ just copying a snapshot back.
 ## Development
 
 ```bash
-uv run pytest          # 250 tests; no network — Telegram and the LLM are faked
+uv run pytest          # 291 tests; no network — Telegram and the LLM are faked
 uv run ruff check .    # lint
 uv run ruff format .   # format
 uv run alembic upgrade head   # apply migrations manually

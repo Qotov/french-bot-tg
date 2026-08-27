@@ -7,6 +7,8 @@ Everything here is what you actually do, week by week, with 20–50 participants
 
 1. **Deploy.** A $5 VPS is plenty (see the systemd unit in the README). Set
    `ADMIN_USER_ID` to your own Telegram id; you are registered automatically.
+   Install `ffmpeg` (`apt install ffmpeg`) or pronunciation will be unavailable
+   — startup logs a warning if it is missing.
 2. **Set the roster cap.** `MAX_USERS=30` for the first cohort — a full slot is
    a better signal than an empty one, and you can raise it any time.
 3. **Smoke-test as a participant.** Generate one invite, join from a second
@@ -57,6 +59,12 @@ Short, honest, with obligations. Copy this:
 
 Decline A0–A1 politely: the bot corrects production, and a true beginner has
 none yet. Point them at a textbook first and offer the next cohort.
+
+If someone is unsure of their level, tell them to answer "не знаю" at
+onboarding — `/placement` measures it in three minutes and is more accurate
+than a self-estimate. Anyone with a dated exam should set `/track` on day one;
+that is the cohort worth recruiting hardest, because the goal does the
+motivating for you.
 
 ## Weekly rhythm
 

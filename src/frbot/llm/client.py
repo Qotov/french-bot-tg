@@ -77,11 +77,20 @@ class LLMClient:
         )
 
     async def correct(
-        self, prompt: str, answer: str, *, model: str, level: str = "B1"
+        self,
+        prompt: str,
+        answer: str,
+        *,
+        model: str,
+        level: str = "B1",
+        criteria: str | None = None,
     ) -> WritingCorrection:
+        system = prompts.with_level(prompts.CORRECTION_SYSTEM, level)
+        if criteria:
+            system = f"{system}\n\nMARKING CRITERIA (weigh your corrections by these):\n{criteria}"
         return await self.complete_json(
             model=model,
-            system=prompts.with_level(prompts.CORRECTION_SYSTEM, level),
+            system=system,
             contents=prompts.CORRECTION_USER.format(prompt=prompt, answer=answer),
             schema=WritingCorrection,
             temperature=TEMPERATURE_CORRECTION,
