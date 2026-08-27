@@ -32,6 +32,7 @@ from frbot.llm.schemas import (
 logger = logging.getLogger(__name__)
 
 MAX_TOKENS = 1500
+MAX_TOKENS_CEILING = 8000  # exam essays need far more room than a daily exercise
 TEMPERATURE_ENRICH = 0.2
 TEMPERATURE_DRILL = 0.2
 TEMPERATURE_CORRECTION = 0.0
@@ -77,14 +78,24 @@ class LLMClient:
         )
 
     async def correct(
-        self, prompt: str, answer: str, *, model: str, level: str = "B1"
+        self,
+        prompt: str,
+        answer: str,
+        *,
+        model: str,
+        level: str = "B1",
+        criteria: str | None = None,
     ) -> WritingCorrection:
+        system = prompts.with_level(prompts.CORRECTION_SYSTEM, level)
+        if criteria:
+            system = f"{system}\n\nMARKING CRITERIA (weigh your corrections by these):\n{criteria}"
         return await self.complete_json(
             model=model,
-            system=prompts.with_level(prompts.CORRECTION_SYSTEM, level),
+            system=system,
             contents=prompts.CORRECTION_USER.format(prompt=prompt, answer=answer),
             schema=WritingCorrection,
             temperature=TEMPERATURE_CORRECTION,
+            max_tokens=correction_token_budget(answer),
         )
 
     async def cloze(
@@ -98,6 +109,55 @@ class LLMClient:
             schema=ClozeSet,
             temperature=TEMPERATURE_DRILL,
         )
+
+    async def synthesize(self, text: str, *, model: str, voice: str) -> bytes:
+        """French pronunciation as raw 24 kHz mono PCM.
+
+        Uses the same transport retry ladder as the text calls but skips the
+        JSON layer entirely — the payload is audio, and there is nothing to
+        validate or re-prompt.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(len(self._backoff) + 1):
+            if attempt > 0:
+                await asyncio.sleep(self._backoff[attempt - 1])
+            try:
+                response = await self._client.aio.models.generate_content(
+                    model=model,
+                    contents=(
+                        "Prononce ce mot ou cette expression en français, "
+                        f"clairement et à vitesse normale : {text}"
+                    ),
+                    config=genai_types.GenerateContentConfig(
+                        response_modalities=["AUDIO"],
+                        speech_config=genai_types.SpeechConfig(
+                            language_code="fr-FR",
+                            voice_config=genai_types.VoiceConfig(
+                                prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(
+                                    voice_name=voice
+                                )
+                            ),
+                        ),
+                    ),
+                )
+            except genai_errors.APIError as exc:
+                code = exc.code or 0
+                if code == 429 or code >= 500:
+                    logger.warning("tts status %s (attempt %d)", code, attempt + 1)
+                    last_exc = exc
+                    continue
+                raise LLMError(f"Gemini TTS error {code}") from exc
+            except (httpx.HTTPError, ConnectionError, TimeoutError) as exc:
+                logger.warning("tts connection error (attempt %d): %s", attempt + 1, exc)
+                last_exc = exc
+                continue
+
+            audio = _extract_audio(response)
+            if audio is None:
+                raise LLMError("Gemini returned no audio")
+            logger.info("tts model=%s bytes=%d text=%r", model, len(audio), text[:40])
+            return audio
+        raise LLMError("Gemini TTS unavailable") from last_exc
 
     async def topic_words(
         self,
@@ -135,9 +195,7 @@ class LLMClient:
             temperature=TEMPERATURE_CORRECTION,
         )
 
-    async def talk_open(
-        self, lemmas: Sequence[str], *, model: str, level: str = "B1"
-    ) -> TalkTurn:
+    async def talk_open(self, lemmas: Sequence[str], *, model: str, level: str = "B1") -> TalkTurn:
         lemma_list = ", ".join(lemmas) if lemmas else "(none yet)"
         return await self.complete_json(
             model=model,
@@ -183,8 +241,9 @@ class LLMClient:
         contents: str | list[Any],
         schema: type[T],
         temperature: float,
+        max_tokens: int = MAX_TOKENS,
     ) -> T:
-        text = await self._call(model, system, contents, temperature)
+        text = await self._call(model, system, contents, temperature, max_tokens)
         try:
             return _parse(text, schema)
         except (json.JSONDecodeError, ValidationError) as exc:
@@ -198,7 +257,7 @@ class LLMClient:
                 retry_contents = f"{contents}\n\n{retry_note}"
             else:
                 retry_contents = [*contents, retry_note]
-            text = await self._call(model, system, retry_contents, temperature)
+            text = await self._call(model, system, retry_contents, temperature, max_tokens)
             try:
                 return _parse(text, schema)
             except (json.JSONDecodeError, ValidationError) as exc2:
@@ -206,7 +265,12 @@ class LLMClient:
                 raise LLMOutputError(f"invalid {schema.__name__} output") from exc2
 
     async def _call(
-        self, model: str, system: str, contents: str | list[Any], temperature: float
+        self,
+        model: str,
+        system: str,
+        contents: str | list[Any],
+        temperature: float,
+        max_tokens: int = MAX_TOKENS,
     ) -> str:
         last_exc: Exception | None = None
         for attempt in range(len(self._backoff) + 1):
@@ -219,7 +283,7 @@ class LLMClient:
                     config=genai_types.GenerateContentConfig(
                         system_instruction=system,
                         temperature=temperature,
-                        max_output_tokens=MAX_TOKENS,
+                        max_output_tokens=max_tokens,
                     ),
                 )
             except genai_errors.APIError as exc:
@@ -235,6 +299,12 @@ class LLMClient:
                 last_exc = exc
                 continue
 
+            if _hit_token_ceiling(response):
+                # Truncated output is not malformed JSON to re-prompt; retrying
+                # with the same ceiling would truncate identically forever.
+                logger.error("llm output hit the %d-token ceiling", max_tokens)
+                raise LLMError("response exceeded the output budget")
+
             usage = getattr(response, "usage_metadata", None)
             logger.info(
                 "llm call model=%s input_tokens=%s output_tokens=%s",
@@ -245,6 +315,36 @@ class LLMClient:
             return response.text or ""
         logger.error("llm call failed after %d attempts", len(self._backoff) + 1)
         raise LLMError("Gemini API unavailable") from last_exc
+
+
+def correction_token_budget(answer: str) -> int:
+    """Enough room to re-emit the text plus its error list.
+
+    A 250-word DELF essay cannot be corrected inside the default budget: the
+    JSON carries the whole corrected text plus one object per error, and
+    Cyrillic explanations cost roughly two characters per token.
+    """
+    return max(MAX_TOKENS, min(int(len(answer) / 2) + 1200, MAX_TOKENS_CEILING))
+
+
+def _hit_token_ceiling(response: Any) -> bool:
+    for candidate in getattr(response, "candidates", None) or []:
+        reason = getattr(candidate, "finish_reason", None)
+        if reason is not None and "MAX_TOKENS" in str(reason).upper():
+            return True
+    return False
+
+
+def _extract_audio(response: Any) -> bytes | None:
+    """Pull inline audio bytes out of a generate_content response."""
+    for candidate in getattr(response, "candidates", None) or []:
+        content = getattr(candidate, "content", None)
+        for part in getattr(content, "parts", None) or []:
+            inline = getattr(part, "inline_data", None)
+            data = getattr(inline, "data", None)
+            if data:
+                return data
+    return None
 
 
 def _audio_part(data: bytes, mime_type: str) -> genai_types.Part:

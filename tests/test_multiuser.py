@@ -283,7 +283,7 @@ def test_usage_limiter_resets_on_the_next_day():
 
 
 async def test_capture_refuses_once_the_daily_cap_is_reached(
-    fake_bot, session_factory, settings, user
+    fake_bot, session_factory, settings, user, alerter
 ):
     """The guardrail must stop the LLM call, not just log it."""
     from frbot.bot.handlers.capture import handle_capture
@@ -294,12 +294,26 @@ async def test_capture_refuses_once_the_daily_cap_is_reached(
     llm = FakeLLM(enrich_results=[Enrichment.model_validate(enrichment_dict("maison"))])
 
     await handle_capture(
-        make_message("maison", bot=fake_bot), user, session_factory, llm, srs(), settings, limiter
+        make_message("maison", bot=fake_bot),
+        user,
+        session_factory,
+        llm,
+        srs(),
+        settings,
+        limiter,
+        alerter,
     )
     assert len(llm.enrich_calls) == 1
 
     await handle_capture(
-        make_message("voiture", bot=fake_bot), user, session_factory, llm, srs(), settings, limiter
+        make_message("voiture", bot=fake_bot),
+        user,
+        session_factory,
+        llm,
+        srs(),
+        settings,
+        limiter,
+        alerter,
     )
     assert len(llm.enrich_calls) == 1  # blocked before reaching Gemini
     assert "лимит" in fake_bot.session.sent_messages[-1].text

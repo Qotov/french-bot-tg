@@ -24,6 +24,9 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from frbot.bot import render
+from frbot.bot.alerts import AdminAlerter
+from frbot.bot.alerts import esc as alerts_esc
+from frbot.bot.audio import VoiceCache, cache_dir
 from frbot.bot.handlers.write import start_writing
 from frbot.bot.keyboards import start_review_kb
 from frbot.config import Settings
@@ -40,6 +43,8 @@ class HasStorage(Protocol):
 logger = logging.getLogger(__name__)
 
 TICK_JOB_ID = "minute_tick"
+HEARTBEAT_JOB_ID = "daily_heartbeat"
+HEARTBEAT_TIME = "09:00"
 WEEKLY_JOB_ID = "weekly_stats"
 BACKUP_JOB_ID = "daily_backup"
 CLEANUP_JOB_ID = "daily_cleanup"
@@ -75,14 +80,22 @@ def _daily(hh_mm: str, tz: str) -> CronTrigger:
 
 
 def _mark_sent(user_id: int, kind: str, today: date) -> bool:
-    """False when this user already got this message today."""
+    """False when this user already got this message on their own local day.
+
+    Participants span timezones, so two users can legitimately be on different
+    calendar dates at the same instant. Entries are therefore aged out by
+    distance from the newest date seen — never by "differs from the date I am
+    looking at right now", which would let users in different zones purge each
+    other's records and get re-notified on every tick.
+    """
     key = (user_id, kind, today)
     if key in _sent_today:
         return False
-    # Keep the set small: drop entries from previous days.
-    for stale in [k for k in _sent_today if k[2] != today]:
-        _sent_today.discard(stale)
     _sent_today.add(key)
+    newest = max(k[2] for k in _sent_today)
+    cutoff = newest - timedelta(days=2)  # widest possible spread is ~26 hours
+    for stale in [k for k in _sent_today if k[2] < cutoff]:
+        _sent_today.discard(stale)
     return True
 
 
@@ -116,6 +129,7 @@ async def send_due_reminder(bot: Bot, user: User, session_factory: SessionFactor
     now = datetime.now(UTC)
     async with session_factory() as session:
         due = await repo.count_due(session, user_id=user.id, until=now)
+        total = await repo.count_cards(session, user_id=user.id)
     chat_id = user.chat_id or user.id
     if due > 0:
         await bot.send_message(
@@ -123,8 +137,16 @@ async def send_due_reminder(bot: Bot, user: User, session_factory: SessionFactor
             f"⏰ К повторению: <b>{due}</b>",
             reply_markup=start_review_kb(),
         )
+    elif total == 0:
+        # A brand-new participant: "nothing to review" would read as a broken
+        # product, so point at the action that fills the deck.
+        await bot.send_message(
+            chat_id,
+            "⏰ В колоде пока пусто. Пришли слово, которое хочешь запомнить, "
+            "или набери /topic и тему — соберу подборку.",
+        )
     else:
-        await bot.send_message(chat_id, "⏰ Сейчас нечего повторять 🎉")
+        await bot.send_message(chat_id, "⏰ Сейчас нечего повторять — всё выучено 🎉")
 
 
 async def send_writing_prompt(
@@ -172,24 +194,35 @@ async def minute_tick(
     session_factory: SessionFactory,
     settings: Settings,
 ) -> None:
-    """Deliver each user's reminder and writing prompt at their own time."""
+    """Deliver each user's reminder and writing prompt at their own local time.
+
+    Participants are scattered across timezones, so the match is made against
+    each learner's own wall clock, not the server's.
+    """
     global _last_local
-    local = datetime.now(ZoneInfo(settings.tz))
-    hh_mm = local.strftime("%H:%M")
-    today = local.date()
+    now = datetime.now(UTC)
+    server_local = now.astimezone(ZoneInfo(settings.tz))
     # On the spring-forward night a whole hour of wall-clock time never occurs,
     # so an exact HH:MM match would silently skip everyone scheduled inside it.
     # Treat every minute the clock jumped over as also due now.
-    skipped = _minutes_skipped(_last_local, local)
-    _last_local = local
+    skipped_by_tz: dict[str, set[str]] = {}
+    previous = _last_local
+    _last_local = server_local
 
     async with session_factory() as session:
         users = await repo.list_active_users(session)
         plan = [(u, repo.config_for_user(u, settings)) for u in users]
 
-    matches = {hh_mm, *skipped}
     due: list[tuple[User, str]] = []
     for user, cfg in plan:
+        local = now.astimezone(ZoneInfo(cfg.tz))
+        hh_mm = local.strftime("%H:%M")
+        today = local.date()
+        if cfg.tz not in skipped_by_tz:
+            skipped_by_tz[cfg.tz] = _minutes_skipped(
+                previous.astimezone(ZoneInfo(cfg.tz)) if previous else None, local
+            )
+        matches = {hh_mm, *skipped_by_tz[cfg.tz]}
         if cfg.reminder_time in matches and _mark_sent(user.id, "reminder", today):
             due.append((user, "reminder"))
         if cfg.writing_time in matches and _mark_sent(user.id, "writing", today):
@@ -197,7 +230,7 @@ async def minute_tick(
     if not due:
         return
 
-    logger.info("tick %s: %d deliveries", hh_mm, len(due))
+    logger.info("tick %s: %d deliveries", server_local.strftime("%H:%M"), len(due))
     for index, (user, kind) in enumerate(due):
         task = asyncio.create_task(
             _deliver(bot, dispatcher, user, kind, session_factory, settings, index)
@@ -232,7 +265,9 @@ async def _deliver(
 
 
 async def cleanup_stray_fsm_entries(
-    dispatcher: HasStorage, session_factory: SessionFactory
+    dispatcher: HasStorage,
+    session_factory: SessionFactory,
+    settings: Settings | None = None,
 ) -> None:
     """Updates from people who are not pilot participants still allocate a
     per-user lock and storage record before the auth middleware drops them;
@@ -256,6 +291,14 @@ async def cleanup_stray_fsm_entries(
                 removed += 1
     logger.info("fsm cleanup: %d stray entries removed", removed)
 
+    if settings is not None:
+        # The pronunciation cache is unbounded otherwise: every new phrase any
+        # participant ever hears stays on disk forever.
+        cache = VoiceCache(cache_dir(settings.db_url), settings.tts_cache_max_files)
+        pruned = await asyncio.to_thread(cache.prune)
+        if pruned:
+            logger.info("tts cache: %d files pruned", pruned)
+
 
 async def send_weekly_summary(
     bot: Bot, session_factory: SessionFactory, settings: Settings
@@ -269,34 +312,82 @@ async def send_weekly_summary(
     async with session_factory() as session:
         await repo.ensure_drill_topics_seeded(session)
         users = await repo.list_active_users(session)
-        topic = await repo.get_topic_for_week(session, today=next_week)
-        if topic is not None:
-            await repo.mark_topic_announced(session, topic, week=next_week)
+        general_topic = await repo.get_topic_for_week(session, today=next_week)
+        if general_topic is not None:
+            await repo.mark_topic_announced(session, general_topic, week=next_week)
         await session.commit()
-        topic_title = topic.title_fr if topic else None
 
     for user in users:
         try:
+            tz = repo.user_tz(user, settings)
             async with session_factory() as session:
                 stats = await repo.gather_stats(
                     session,
                     user_id=user.id,
-                    due_until=day_end_utc(now, settings.tz),
+                    due_until=day_end_utc(now, tz),
                     week_ago=now - timedelta(days=7),
                     month_ago=now - timedelta(days=30),
-                    tz=settings.tz,
+                    tz=tz,
                 )
             chat_id = user.chat_id or user.id
             await bot.send_message(chat_id, render.weekly_summary(stats))
-            if topic_title:
+            # An exam track reorders the rotation, so announce the topic this
+            # learner will actually be drilled on — not the general one.
+            async with session_factory() as session:
+                topic = await repo.get_topic_for_week(
+                    session, today=next_week, track=user.track
+                )
+            if topic is not None:
                 await bot.send_message(
                     chat_id,
-                    f"📅 Тема следующей недели: <b>{render.esc(topic_title)}</b> — /drill",
+                    f"📅 Тема следующей недели: <b>{render.esc(topic.title_fr)}</b> — /drill",
                 )
             await asyncio.sleep(1 / SEND_RATE)
         except Exception:
             logger.exception("weekly summary to user %d failed", user.id)
     logger.info("weekly summary sent to %d users", len(users))
+
+
+async def send_heartbeat(
+    bot: Bot,
+    session_factory: SessionFactory,
+    settings: Settings,
+    alerter: "AdminAlerter",
+) -> None:
+    """A daily line to the operator: proof the process is alive, plus the two
+    numbers the pilot's gates are made of."""
+    now = datetime.now(UTC)
+    week_ago = now - timedelta(days=7)
+    async with session_factory() as session:
+        users = await repo.list_users(session)
+        active = 0
+        committed = 0
+        for user in users:
+            days = await repo.count_active_days(
+                session, user_id=user.id, since=week_ago, tz=repo.user_tz(user, settings)
+            )
+            if days:
+                active += 1
+            if days >= 4:
+                committed += 1
+        backups = 0
+    prefix = "sqlite+aiosqlite:///"
+    if settings.db_url.startswith(prefix) and ":memory:" not in settings.db_url:
+        backups_dir = Path(settings.db_url.removeprefix(prefix)).parent / "backups"
+        backups = len(list(backups_dir.glob("frbot-*.db"))) if backups_dir.exists() else 0
+
+    total = len(users) or 1
+    text = (
+        f"💚 <b>Бот жив</b>\n"
+        f"Участников: {len(users)}/{settings.max_users}\n"
+        f"Активны за 7 дней: {active} ({round(100 * active / total)}%)\n"
+        f"Занимались ≥4 дней: {committed} ({round(100 * committed / total)}%)\n"
+        f"Бэкапов на диске: {backups}"
+    )
+    try:
+        await bot.send_message(alerter.admin_user_id, text)
+    except Exception:
+        logger.exception("heartbeat delivery failed")
 
 
 def _copy_and_prune(src: Path, today: str) -> tuple[Path | None, int]:
@@ -320,13 +411,27 @@ def _copy_and_prune(src: Path, today: str) -> tuple[Path | None, int]:
     return dst, len(stale)
 
 
-async def backup_database(settings: Settings) -> None:
+async def backup_database(
+    settings: Settings,
+    bot: Bot | None = None,
+    alerter: "AdminAlerter | None" = None,
+) -> None:
     prefix = "sqlite+aiosqlite:///"
     if not settings.db_url.startswith(prefix) or ":memory:" in settings.db_url:
         return
     src = Path(settings.db_url.removeprefix(prefix))
     today = datetime.now(ZoneInfo(settings.tz)).date().isoformat()
-    dst, pruned = await asyncio.to_thread(_copy_and_prune, src, today)
+    try:
+        dst, pruned = await asyncio.to_thread(_copy_and_prune, src, today)
+    except Exception as exc:
+        logger.exception("backup failed")
+        if bot is not None and alerter is not None:
+            await alerter.send(
+                bot,
+                "backup",
+                f"🚨 <b>Бэкап не удался</b>\n<code>{alerts_esc(str(exc)[:300])}</code>",
+            )
+        return
     if dst is None:
         logger.warning("backup skipped: %s does not exist", src)
         return
@@ -339,6 +444,7 @@ def setup_jobs(
     dispatcher: HasStorage,
     session_factory: SessionFactory,
     settings: Settings,
+    alerter: "AdminAlerter | None" = None,
 ) -> None:
     scheduler.add_job(
         minute_tick,
@@ -360,18 +466,28 @@ def setup_jobs(
         backup_database,
         _daily(BACKUP_TIME, settings.tz),
         id=BACKUP_JOB_ID,
-        args=[settings],
+        args=[settings, bot, alerter],
         replace_existing=True,
     )
+    if alerter is not None:
+        scheduler.add_job(
+            send_heartbeat,
+            _daily(HEARTBEAT_TIME, settings.tz),
+            id=HEARTBEAT_JOB_ID,
+            args=[bot, session_factory, settings, alerter],
+            replace_existing=True,
+        )
     scheduler.add_job(
         cleanup_stray_fsm_entries,
         _daily(CLEANUP_TIME, settings.tz),
         id=CLEANUP_JOB_ID,
-        args=[dispatcher, session_factory],
+        args=[dispatcher, session_factory, settings],
         replace_existing=True,
     )
     logger.info(
-        "jobs scheduled: per-user tick every minute, weekly sun 18:00, backup %s, cleanup %s",
+        "jobs scheduled: per-user tick every minute, weekly sun 18:00, backup %s, "
+        "cleanup %s, heartbeat %s",
         BACKUP_TIME,
         CLEANUP_TIME,
+        HEARTBEAT_TIME if alerter is not None else "off",
     )

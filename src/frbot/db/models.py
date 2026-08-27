@@ -110,9 +110,8 @@ LEVELS = ("A2", "B1", "B2")
 
 
 class User(Base):
-    """A pilot participant. id is the Telegram user id. The four nullable
-    settings columns override the .env defaults when set (see
-    repo.effective_config)."""
+    """A pilot participant. id is the Telegram user id. The nullable settings
+    columns override the .env defaults when set (see repo.config_for_user)."""
 
     __tablename__ = "users"
 
@@ -124,6 +123,8 @@ class User(Base):
     invite_code: Mapped[str | None] = mapped_column(nullable=True)
     is_admin: Mapped[bool] = mapped_column(default=False)
     active: Mapped[bool] = mapped_column(default=True)
+    tz: Mapped[str | None] = mapped_column(nullable=True)  # IANA name
+    track: Mapped[str | None] = mapped_column(nullable=True)  # exam track slug
     reminder_time: Mapped[str | None] = mapped_column(nullable=True)
     writing_time: Mapped[str | None] = mapped_column(nullable=True)
     daily_new_limit: Mapped[int | None] = mapped_column(nullable=True)

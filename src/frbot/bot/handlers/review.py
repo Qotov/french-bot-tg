@@ -19,7 +19,7 @@ from frbot.bot.keyboards import grade_kb, show_answer_kb
 from frbot.bot.telegram_utils import safe_answer, safe_clear_markup, safe_edit_text
 from frbot.config import Settings
 from frbot.db import repo
-from frbot.db.models import User
+from frbot.db.models import CardKind, User
 from frbot.db.session import SessionFactory
 from frbot.srs.queue import build_queue
 from frbot.srs.scheduler import SrsScheduler
@@ -28,7 +28,20 @@ from frbot.timeutil import tomorrow_end_utc
 logger = logging.getLogger(__name__)
 
 NOT_ACTIVE_TEXT = "Сессия не активна — начни заново: /review"
-EMPTY_TEXT = "🎉 Сегодня нечего повторять."
+EMPTY_TEXT = "🎉 Сегодня нечего повторять — всё выучено."
+
+
+def _audio_on(settings: Settings) -> bool:
+    from frbot.bot.pronounce import audio_supported
+
+    return settings.tts_enabled and audio_supported()
+
+
+NO_CARDS_TEXT = (
+    "В колоде пока пусто 🙂\n\n"
+    "Пришли любое французское слово — сделаю карточку. "
+    "Или набери <code>/topic ресторан</code> и я соберу подборку по теме."
+)
 
 
 class ReviewStates(StatesGroup):
@@ -57,13 +70,14 @@ async def start_session(
             session,
             user_id=user.id,
             now=now,
-            tz=settings.tz,
+            tz=cfg.tz,
             session_max=cfg.session_max,
             daily_new_limit=cfg.daily_new_limit,
         )
         if queue.total == 0:
             await state.clear()
-            await answer(EMPTY_TEXT)
+            total = await repo.count_cards(session, user_id=user.id)
+            await answer(EMPTY_TEXT if total else NO_CARDS_TEXT)
             return
         first_card = await repo.get_card(session, queue.card_ids[0], user_id=user.id)
 
@@ -143,7 +157,10 @@ async def on_show(
         await safe_edit_text(
             query.message,
             _full_text(card, data["index"], data["total"]),
-            reply_markup=grade_kb(card.id),
+            reply_markup=grade_kb(
+                card.id,
+                with_audio=_audio_on(settings) and card.kind == CardKind.vocab.value,
+            ),
         )
     await query.answer()
 
@@ -173,9 +190,7 @@ async def on_grade(
         card = await repo.get_card(session, card_id, user_id=user.id)
         if card is not None:
             result = srs.review(card.fsrs, rating, now)
-            await repo.apply_review(
-                session, card, result, user_id=user.id, rating=rating, now=now
-            )
+            await repo.apply_review(session, card, result, user_id=user.id, rating=rating, now=now)
             await session.commit()
             logger.info("graded card %d rating=%d next due %s", card_id, rating, result.due)
 
@@ -232,7 +247,9 @@ async def _finish(
         now = datetime.now(UTC)
         async with session_factory() as session:
             tomorrow_due = await repo.count_due(
-                session, user_id=user.id, until=tomorrow_end_utc(now, settings.tz)
+                session,
+                user_id=user.id,
+                until=tomorrow_end_utc(now, repo.user_tz(user, settings)),
             )
 
     summary = (

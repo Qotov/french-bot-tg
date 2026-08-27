@@ -1,18 +1,34 @@
 """/start (registration by invite), /help, /level, /feedback."""
 
+import asyncio
 import logging
+from datetime import UTC, datetime
 
 from aiogram import F, Router
+from aiogram.enums import ChatAction
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from frbot.bot import render
+from frbot.bot.alerts import AdminAlerter
+from frbot.bot.handlers.placement import cmd_placement
+from frbot.bot.handlers.topic import build_starter_deck
+from frbot.bot.onboarding import (
+    BUILDING_DECK_TEXT,
+    DECK_FAILED_TEXT,
+    FIRST_STEPS_TEXT,
+    STARTER_DECK_TIMEOUT,
+)
 from frbot.bot.telegram_utils import safe_answer, safe_edit_text
 from frbot.config import Settings
 from frbot.db import repo
 from frbot.db.models import LEVELS, User
 from frbot.db.session import SessionFactory
+from frbot.llm.client import LLMClient
+from frbot.srs.scheduler import SrsScheduler
+from frbot.usage import UsageLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -25,10 +41,14 @@ HELP_TEXT = (
     "/topic — подборка слов по любой теме (например: /topic ресторан 10)\n"
     "/drill — грамматическая тема недели\n"
     "/stats — твой прогресс\n"
+    "/cards — моя колода: посмотреть, поставить на паузу, удалить\n"
     "/level — уровень (A2 / B1 / B2)\n"
+    "/placement — тест на уровень (3 минуты)\n"
+    "/track — цель: DELF B1 / DELF B2 / TCF\n"
     "/settings — время напоминаний и лимиты\n"
     "/feedback — написать автору (я читаю всё)\n"
     "/stop — прервать текущую сессию\n"
+    "/delete_me — удалить все свои данные\n"
     "/help — эта справка"
 )
 
@@ -46,24 +66,14 @@ LEVEL_HINTS = {
     "B2": "уверенно говорю, хочу точности и нюансов",
 }
 
-FIRST_STEPS_TEXT = (
-    "Отлично! Три шага, чтобы начать прямо сейчас:\n\n"
-    "1️⃣ Пришли мне любое французское слово, которое хочешь запомнить "
-    "(или скажи голосом).\n"
-    "2️⃣ Набери /topic и тему — соберу подборку слов, выберешь нужные.\n"
-    "3️⃣ Вечером пришлю задание на письмо. Отвечай текстом или голосом.\n\n"
-    "Дальше просто: 10–15 минут в день. /help — если что-то забудешь."
-)
 
 NEED_INVITE_TEXT = (
-    "Это закрытая бета. Чтобы войти, пришли код приглашения:\n"
-    "<code>/start ТВОЙКОД</code>"
+    "Это закрытая бета. Чтобы войти, пришли код приглашения:\n<code>/start ТВОЙКОД</code>"
 )
 BAD_INVITE_TEXT = "Код не подошёл — возможно, он уже использован. Проверь ещё раз."
 FULL_TEXT = "Сейчас все места в бете заняты. Напиши автору, чтобы попасть в следующий набор."
 FEEDBACK_ASK = (
-    "Напиши, что работает, что мешает, чего не хватает — одним сообщением. "
-    "Я читаю всё лично."
+    "Напиши, что работает, что мешает, чего не хватает — одним сообщением. Я читаю всё лично."
 )
 FEEDBACK_THANKS = "Спасибо! Записал и прочитаю сегодня же."
 
@@ -74,6 +84,7 @@ def level_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text=f"{lvl} — {LEVEL_HINTS[lvl]}", callback_data=f"level:{lvl}")]
             for lvl in LEVELS
         ]
+        + [[InlineKeyboardButton(text="🎯 Не знаю — пройти тест", callback_data="level:test")]]
     )
 
 
@@ -136,25 +147,72 @@ async def cmd_level(message: Message, user: User) -> None:
 
 async def on_level_chosen(
     query: CallbackQuery,
+    state: FSMContext,
     user: User,
     session_factory: SessionFactory,
+    llm: LLMClient,
+    srs: SrsScheduler,
+    settings: Settings,
+    usage: UsageLimiter,
+    alerter: AdminAlerter,
 ) -> None:
     level = query.data.split(":")[1]
+    if level == "test":
+        # They would rather be measured than guess — the better answer.
+        await safe_answer(query)
+        if isinstance(query.message, Message):
+            await safe_edit_text(query.message, "🎯 Определим уровень тестом.")
+            await cmd_placement(query.message, state, onboarding=True)
+        return
     async with session_factory() as session:
         ok = await repo.set_user_level(session, user.id, level)
         await session.commit()
+        user = await repo.get_user(session, user.id)
     if not ok:
         await safe_answer(query, "Неизвестный уровень.")
         return
-    if isinstance(query.message, Message):
-        await safe_edit_text(query.message, f"Уровень: <b>{render.esc(level)}</b> ✅")
-        await query.message.answer(FIRST_STEPS_TEXT)
     await safe_answer(query)
+    if not isinstance(query.message, Message):
+        return
+
+    await safe_edit_text(query.message, f"Уровень: <b>{render.esc(level)}</b> ✅")
+
+    # Day one must not be an empty deck — build one before saying anything else.
+    async with session_factory() as session:
+        already = await repo.count_cards(session, user_id=user.id)
+    if already == 0:
+        await query.message.answer(BUILDING_DECK_TEXT)
+        await query.message.bot.send_chat_action(query.message.chat.id, ChatAction.TYPING)
+        # Bounded: this runs while the per-user lock is held, so it must not be
+        # able to block the participant's own messages for minutes.
+        try:
+            async with asyncio.timeout(STARTER_DECK_TIMEOUT):
+                created = await build_starter_deck(
+                    user,
+                    session_factory,
+                    llm,
+                    srs,
+                    settings,
+                    usage,
+                    alerter,
+                    query.message.bot,
+                )
+        except TimeoutError:
+            logger.warning("starter deck timed out for user %d", user.id)
+            created = []
+        if created:
+            preview = ", ".join(render.esc(lemma) for lemma in created[:6])
+            await query.message.answer(
+                f"🎁 Готово — {len(created)} карточек для начала: {preview}…\n\n"
+                f"Попробуй прямо сейчас: /review"
+            )
+        else:
+            await query.message.answer(DECK_FAILED_TEXT)
+
+    await query.message.answer(FIRST_STEPS_TEXT)
 
 
-BUSY_TEXT = (
-    "Сейчас идёт другая сессия. Заверши её или набери /stop, потом /feedback."
-)
+BUSY_TEXT = "Сейчас идёт другая сессия. Заверши её или набери /stop, потом /feedback."
 
 
 async def cmd_feedback(message: Message, state: FSMContext) -> None:
@@ -188,12 +246,63 @@ async def handle_feedback(
     await message.answer(FEEDBACK_THANKS)
 
 
+DELETE_CONFIRM_TEXT = (
+    "⚠️ Это удалит <b>всё</b>: карточки, историю повторений, тексты и сам аккаунт. "
+    "Отменить будет нельзя.\n\n"
+    "Если уверен(а), пришли одним сообщением: <code>УДАЛИТЬ</code>\n"
+    "Передумал(а) — просто напиши что угодно другое или /stop."
+)
+DELETE_CONFIRM_TTL = 300  # seconds; after that the armed confirmation lapses
+DELETE_WORD = "УДАЛИТЬ"
+DELETE_DONE_TEXT = (
+    "Готово — всё удалено: {cards} карточек, {reviews} повторений, {writings} текстов.\n"
+    "Спасибо, что попробовал(а). Вернуться можно по новому приглашению."
+)
+DELETE_CANCELLED_TEXT = "Отменил — ничего не удалено."
+
+
+class DeleteStates(StatesGroup):
+    confirming = State()
+
+
+async def cmd_delete_me(message: Message, state: FSMContext) -> None:
+    await state.set_state(DeleteStates.confirming)
+    await state.update_data(delete_armed_at=datetime.now(UTC).timestamp())
+    await message.answer(DELETE_CONFIRM_TEXT)
+
+
+async def handle_delete_confirmation(
+    message: Message,
+    state: FSMContext,
+    user: User,
+    session_factory: SessionFactory,
+) -> None:
+    armed_at = (await state.get_data()).get("delete_armed_at", 0)
+    await state.clear()
+    expired = datetime.now(UTC).timestamp() - armed_at > DELETE_CONFIRM_TTL
+    if expired or (message.text or "").strip().upper() != DELETE_WORD:
+        # Anything that is not the exact word cancels — and a confirmation left
+        # armed for minutes must not delete an account because the next message
+        # happened to be that word.
+        await message.answer(DELETE_CANCELLED_TEXT)
+        return
+    async with session_factory() as session:
+        counts = await repo.delete_user_data(session, user.id)
+        await session.commit()
+    logger.info("user %d deleted their account", user.id)
+    await message.answer(DELETE_DONE_TEXT.format(**counts))
+
+
 def create_router() -> Router:
     router = Router(name="system")
     router.message.register(cmd_start, CommandStart())
     router.message.register(cmd_help, Command("help"))
     router.message.register(cmd_level, Command("level"))
     router.message.register(cmd_feedback, Command("feedback"))
+    router.message.register(cmd_delete_me, Command("delete_me"))
+    router.message.register(
+        handle_delete_confirmation, DeleteStates.confirming, F.text, ~F.text.startswith("/")
+    )
     router.callback_query.register(on_level_chosen, F.data.startswith("level:"))
     return router
 

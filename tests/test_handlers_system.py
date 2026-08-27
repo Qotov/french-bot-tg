@@ -134,16 +134,115 @@ async def test_start_for_existing_user_shows_help_and_refreshes_chat_id(
 # ------------------------------------------------------------------- level
 
 
-async def test_level_choice_is_saved_and_first_steps_shown(
-    fake_bot, session_factory, settings, user
+def _placement_state(bot):
+    from aiogram.fsm.context import FSMContext
+    from aiogram.fsm.storage.base import StorageKey
+    from aiogram.fsm.storage.memory import MemoryStorage
+
+    return FSMContext(
+        storage=MemoryStorage(),
+        key=StorageKey(bot_id=bot.id, chat_id=ALLOWED_USER_ID, user_id=ALLOWED_USER_ID),
+    )
+
+
+def _starter_llm():
+    """An LLM that can produce a starter deck (topic list + enrichments)."""
+    from frbot.llm.schemas import Enrichment, TopicWordList
+    from tests.fakes import FakeLLM, enrichment_dict, load_fixture_json
+
+    words = ["la maison", "le métro", "déjeuner"]
+    return (
+        FakeLLM(
+            topic_results=[
+                TopicWordList.model_validate(
+                    {"words": [{"lemma": w, "translation_ru": "…"} for w in words]}
+                )
+            ],
+            enrich_results=[Enrichment.model_validate(enrichment_dict(w)) for w in words],
+        ),
+        words,
+        load_fixture_json,
+    )
+
+
+async def test_level_choice_is_saved_and_builds_a_starter_deck(
+    fake_bot, session_factory, settings, user, usage, alerter
 ):
+    """Day one must not be an empty deck — that is the top churn reason."""
+    from frbot.srs.scheduler import SrsScheduler
+
+    llm, words, _ = _starter_llm()
     query = make_callback_query("level:B2", bot=fake_bot)
-    await on_level_chosen(query, user, session_factory)
+    await on_level_chosen(
+        query,
+        _placement_state(fake_bot),
+        user,
+        session_factory,
+        llm,
+        SrsScheduler(0.9),
+        settings,
+        usage,
+        alerter,
+    )
+
     async with session_factory() as session:
         row = await repo.get_user(session, user.id)
+        cards = await repo.count_cards(session, user_id=user.id)
     assert row.level == "B2"
+    assert cards == len(words)  # the deck is ready before they do anything
+
     texts = [m.text for m in fake_bot.session.sent_messages]
-    assert any("Три шага" in t for t in texts)
+    assert any("карточек для начала" in t for t in texts)
+    assert any("/review" in t for t in texts)
+    # The starter pack is generated at the level just chosen.
+    assert llm.topic_calls[0][0]
+    assert any("delete_me" in t for t in texts)  # privacy line present
+
+
+async def test_level_choice_survives_a_failed_starter_deck(
+    fake_bot, session_factory, settings, user, usage, alerter
+):
+    from frbot.llm.client import LLMError
+    from frbot.srs.scheduler import SrsScheduler
+    from tests.fakes import FakeLLM
+
+    llm = FakeLLM(topic_results=[LLMError("down")])
+    await on_level_chosen(
+        make_callback_query("level:A2", bot=fake_bot),
+        _placement_state(fake_bot),
+        user,
+        session_factory,
+        llm,
+        SrsScheduler(0.9),
+        settings,
+        usage,
+        alerter,
+    )
+    texts = [m.text for m in fake_bot.session.sent_messages]
+    assert any("Не получилось собрать" in t for t in texts)
+    assert any("/topic" in t for t in texts)  # still told what to do next
+
+
+async def test_starter_deck_is_skipped_when_the_deck_is_not_empty(
+    fake_bot, session_factory, settings, user, usage, alerter
+):
+    from frbot.srs.scheduler import SrsScheduler
+    from tests.fakes import add_vocab_card
+
+    await add_vocab_card(session_factory, "déjà")
+    llm, _, _ = _starter_llm()
+    await on_level_chosen(
+        make_callback_query("level:B1", bot=fake_bot),
+        _placement_state(fake_bot),
+        user,
+        session_factory,
+        llm,
+        SrsScheduler(0.9),
+        settings,
+        usage,
+        alerter,
+    )
+    assert llm.topic_calls == []  # no pack for someone who already has cards
 
 
 async def test_level_command_offers_the_keyboard(fake_bot, user):

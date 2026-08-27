@@ -34,11 +34,29 @@ def srs() -> SrsScheduler:
     return SrsScheduler(desired_retention=0.9)
 
 
-async def test_review_with_no_cards_says_empty(fake_bot, session_factory, settings, user):
+async def test_review_with_an_empty_deck_tells_you_how_to_fill_it(
+    fake_bot, session_factory, settings, user
+):
+    """ "Nothing to review" on an empty deck reads as a broken product."""
+    from frbot.bot.handlers.review import NO_CARDS_TEXT
+
+    state = make_state(fake_bot)
+    await cmd_review(make_message("/review", bot=fake_bot), state, user, session_factory, settings)
+    assert fake_bot.session.sent_messages[0].text == NO_CARDS_TEXT
+    assert await state.get_state() is None
+
+
+async def test_review_with_cards_but_none_due_says_all_caught_up(
+    fake_bot, session_factory, settings, user
+):
+    from datetime import UTC, datetime, timedelta
+
+    await add_vocab_card(
+        session_factory, "plus-tard", reviewed_days_ago=1, due=datetime.now(UTC) + timedelta(days=5)
+    )
     state = make_state(fake_bot)
     await cmd_review(make_message("/review", bot=fake_bot), state, user, session_factory, settings)
     assert fake_bot.session.sent_messages[0].text == EMPTY_TEXT
-    assert await state.get_state() is None
 
 
 async def test_full_session_two_cards(fake_bot, session_factory, settings, user):
@@ -68,7 +86,9 @@ async def test_full_session_two_cards(fake_bot, session_factory, settings, user)
     shown = fake_bot.session.sent("EditMessageText")[-1]
     assert "по мере" in shown.text  # back contains the translation
     grade_labels = [b.text for row in shown.reply_markup.inline_keyboard for b in row]
-    assert grade_labels == ["Again", "Hard", "Good", "Easy"]
+    assert grade_labels[-4:] == ["Again", "Hard", "Good", "Easy"]
+    # A vocab card also offers pronunciation.
+    assert any("🔊" in label for label in grade_labels)
 
     # Grade Good -> next card arrives.
     await on_grade(

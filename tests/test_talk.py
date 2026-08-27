@@ -74,18 +74,27 @@ async def error_card_count(session_factory) -> int:
         return (await session.execute(stmt)).scalar_one()
 
 
-async def start_talk(fake_bot, session_factory, settings, llm, user, usage):
+async def start_talk(fake_bot, session_factory, settings, llm, user, usage, alerter):
     state = make_state(fake_bot)
     await cmd_talk(
-        make_message("/talk", bot=fake_bot), state, user, session_factory, llm, settings, usage
+        make_message("/talk", bot=fake_bot),
+        state,
+        user,
+        session_factory,
+        llm,
+        settings,
+        usage,
+        alerter,
     )
     return state
 
 
-async def test_talk_opens_with_french_question(fake_bot, session_factory, settings, user, usage):
+async def test_talk_opens_with_french_question(
+    fake_bot, session_factory, settings, user, usage, alerter
+):
     await add_vocab_card(session_factory, "marché")
     llm = FakeLLM(talk_results=[OPENER])
-    state = await start_talk(fake_bot, session_factory, settings, llm, user, usage)
+    state = await start_talk(fake_bot, session_factory, settings, llm, user, usage, alerter)
 
     assert llm.talk_calls[0]["kind"] == "open"
     assert "marché" in llm.talk_calls[0]["lemmas"]
@@ -95,9 +104,11 @@ async def test_talk_opens_with_french_question(fake_bot, session_factory, settin
     assert "Qu'est-ce que tu as mangé" in sent
 
 
-async def test_text_turn_corrects_and_replies(fake_bot, session_factory, settings, user, usage):
+async def test_text_turn_corrects_and_replies(
+    fake_bot, session_factory, settings, user, usage, alerter
+):
     llm = FakeLLM(talk_results=[OPENER, TURN_WITH_ERROR])
-    state = await start_talk(fake_bot, session_factory, settings, llm, user, usage)
+    state = await start_talk(fake_bot, session_factory, settings, llm, user, usage, alerter)
 
     await handle_text_turn(
         make_message("hier j'ai allé au marché", bot=fake_bot),
@@ -108,6 +119,7 @@ async def test_text_turn_corrects_and_replies(fake_bot, session_factory, setting
         srs(),
         settings,
         usage,
+        alerter,
     )
     turn_call = llm.talk_calls[-1]
     assert turn_call["text"] == "hier j'ai allé au marché"
@@ -132,10 +144,10 @@ async def test_text_turn_corrects_and_replies(fake_bot, session_factory, setting
 
 
 async def test_clean_turn_has_no_corrections_block(
-    fake_bot, session_factory, settings, user, usage
+    fake_bot, session_factory, settings, user, usage, alerter
 ):
     llm = FakeLLM(talk_results=[OPENER, CLEAN_TURN])
-    state = await start_talk(fake_bot, session_factory, settings, llm, user, usage)
+    state = await start_talk(fake_bot, session_factory, settings, llm, user, usage, alerter)
     await handle_text_turn(
         make_message("Je vais très bien, merci.", bot=fake_bot),
         state,
@@ -145,6 +157,7 @@ async def test_clean_turn_has_no_corrections_block(
         srs(),
         settings,
         usage,
+        alerter,
     )
     reply = fake_bot.session.sent_messages[-1].text
     assert "❌" not in reply
@@ -153,12 +166,20 @@ async def test_clean_turn_has_no_corrections_block(
 
 
 async def test_voice_turn_shows_transcript_and_corrects(
-    fake_bot, session_factory, settings, user, usage
+    fake_bot, session_factory, settings, user, usage, alerter
 ):
     llm = FakeLLM(talk_results=[OPENER, VOICE_TURN])
-    state = await start_talk(fake_bot, session_factory, settings, llm, user, usage)
+    state = await start_talk(fake_bot, session_factory, settings, llm, user, usage, alerter)
     await handle_voice_turn(
-        make_voice_message(bot=fake_bot), state, user, session_factory, llm, srs(), settings, usage
+        make_voice_message(bot=fake_bot),
+        state,
+        user,
+        session_factory,
+        llm,
+        srs(),
+        settings,
+        usage,
+        alerter,
     )
     assert llm.talk_calls[-1]["audio"] is True
     assert llm.talk_calls[-1]["text"] is None
@@ -171,9 +192,9 @@ async def test_voice_turn_shows_transcript_and_corrects(
     assert history[-2] == "Élève: je vais au boulangerie"
 
 
-async def test_too_long_voice_rejected(fake_bot, session_factory, settings, user, usage):
+async def test_too_long_voice_rejected(fake_bot, session_factory, settings, user, usage, alerter):
     llm = FakeLLM(talk_results=[OPENER])
-    state = await start_talk(fake_bot, session_factory, settings, llm, user, usage)
+    state = await start_talk(fake_bot, session_factory, settings, llm, user, usage, alerter)
     await handle_voice_turn(
         make_voice_message(duration=VOICE_MAX_DURATION + 1, bot=fake_bot),
         state,
@@ -183,14 +204,15 @@ async def test_too_long_voice_rejected(fake_bot, session_factory, settings, user
         srs(),
         settings,
         usage,
+        alerter,
     )
     assert "короче" in fake_bot.session.sent_messages[-1].text
     assert len(llm.talk_calls) == 1  # only the opener
 
 
-async def test_history_is_trimmed(fake_bot, session_factory, settings, user, usage):
+async def test_history_is_trimmed(fake_bot, session_factory, settings, user, usage, alerter):
     llm = FakeLLM(talk_results=[OPENER] + [CLEAN_TURN] * 20)
-    state = await start_talk(fake_bot, session_factory, settings, llm, user, usage)
+    state = await start_talk(fake_bot, session_factory, settings, llm, user, usage, alerter)
     for i in range(10):
         await handle_text_turn(
             make_message(f"Message numéro {i}.", bot=fake_bot),
@@ -201,14 +223,17 @@ async def test_history_is_trimmed(fake_bot, session_factory, settings, user, usa
             srs(),
             settings,
             usage,
+            alerter,
         )
     history = (await state.get_data())["history"]
     assert len(history) == HISTORY_MAX
 
 
-async def test_turn_failure_keeps_session(fake_bot, session_factory, settings, user, usage):
+async def test_turn_failure_keeps_session(
+    fake_bot, session_factory, settings, user, usage, alerter
+):
     llm = FakeLLM(talk_results=[OPENER, LLMError("down"), CLEAN_TURN])
-    state = await start_talk(fake_bot, session_factory, settings, llm, user, usage)
+    state = await start_talk(fake_bot, session_factory, settings, llm, user, usage, alerter)
     await handle_text_turn(
         make_message("Bonjour", bot=fake_bot),
         state,
@@ -218,6 +243,7 @@ async def test_turn_failure_keeps_session(fake_bot, session_factory, settings, u
         srs(),
         settings,
         usage,
+        alerter,
     )
     assert fake_bot.session.sent_messages[-1].text == FAIL_TEXT
     assert await state.get_state() == TalkStates.talking.state
@@ -231,13 +257,14 @@ async def test_turn_failure_keeps_session(fake_bot, session_factory, settings, u
         srs(),
         settings,
         usage,
+        alerter,
     )
     assert "quels sont tes plans" in fake_bot.session.sent_messages[-1].text
 
 
-async def test_stop_ends_dialogue(fake_bot, session_factory, settings, user, usage):
+async def test_stop_ends_dialogue(fake_bot, session_factory, settings, user, usage, alerter):
     llm = FakeLLM(talk_results=[OPENER])
-    state = await start_talk(fake_bot, session_factory, settings, llm, user, usage)
+    state = await start_talk(fake_bot, session_factory, settings, llm, user, usage, alerter)
     await cmd_stop(make_message("/stop", bot=fake_bot), state)
     assert await state.get_state() is None
     assert "завершён" in fake_bot.session.sent_messages[-1].text
@@ -259,11 +286,13 @@ async def test_stop_cancels_any_active_flow(fake_bot):
     assert "прервана" in fake_bot.session.sent_messages[-1].text
 
 
-async def test_overlong_text_turn_rejected(fake_bot, session_factory, settings, user, usage):
+async def test_overlong_text_turn_rejected(
+    fake_bot, session_factory, settings, user, usage, alerter
+):
     from frbot.bot.handlers.talk import TURN_MAX_LEN
 
     llm = FakeLLM(talk_results=[OPENER])
-    state = await start_talk(fake_bot, session_factory, settings, llm, user, usage)
+    state = await start_talk(fake_bot, session_factory, settings, llm, user, usage, alerter)
     await handle_text_turn(
         make_message("x" * (TURN_MAX_LEN + 1), bot=fake_bot),
         state,
@@ -273,6 +302,7 @@ async def test_overlong_text_turn_rejected(fake_bot, session_factory, settings, 
         srs(),
         settings,
         usage,
+        alerter,
     )
     assert "Слишком длинно" in fake_bot.session.sent_messages[-1].text
     assert len(llm.talk_calls) == 1  # only the opener
@@ -280,7 +310,7 @@ async def test_overlong_text_turn_rejected(fake_bot, session_factory, settings, 
 
 
 async def test_turn_reply_never_exceeds_telegram_limit(
-    fake_bot, session_factory, settings, user, usage
+    fake_bot, session_factory, settings, user, usage, alerter
 ):
     monster = TalkTurn(
         transcript="mot " * 500,
@@ -297,7 +327,7 @@ async def test_turn_reply_never_exceeds_telegram_limit(
         reply_fr="réponse " * 500,
     )
     llm = FakeLLM(talk_results=[OPENER, monster])
-    state = await start_talk(fake_bot, session_factory, settings, llm, user, usage)
+    state = await start_talk(fake_bot, session_factory, settings, llm, user, usage, alerter)
     await handle_text_turn(
         make_message("Bonjour", bot=fake_bot),
         state,
@@ -307,6 +337,7 @@ async def test_turn_reply_never_exceeds_telegram_limit(
         srs(),
         settings,
         usage,
+        alerter,
     )
     reply = fake_bot.session.sent_messages[-1].text
     assert len(reply) <= 4096

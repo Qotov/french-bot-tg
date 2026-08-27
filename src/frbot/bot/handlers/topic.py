@@ -17,6 +17,8 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from frbot.bot import render
+from frbot.bot.alerts import AdminAlerter
+from frbot.bot.alerts import esc as alerts_esc
 from frbot.bot.keyboards import topic_select_kb
 from frbot.bot.telegram_utils import safe_answer, safe_edit_text
 from frbot.config import Settings
@@ -74,13 +76,14 @@ async def cmd_topic(
     llm: LLMClient,
     settings: Settings,
     usage: UsageLimiter,
+    alerter: AdminAlerter,
 ) -> None:
     parsed = parse_topic_args(command.args or "")
     if parsed is None:
         await state.set_state(TopicStates.choosing)
         await message.answer(ASK_TOPIC_TEXT)
         return
-    await _generate(message, state, parsed, user, session_factory, llm, settings, usage)
+    await _generate(message, state, parsed, user, session_factory, llm, settings, usage, alerter)
 
 
 async def handle_topic_input(
@@ -91,12 +94,13 @@ async def handle_topic_input(
     llm: LLMClient,
     settings: Settings,
     usage: UsageLimiter,
+    alerter: AdminAlerter,
 ) -> None:
     parsed = parse_topic_args(message.text or "")
     if parsed is None:
         await message.answer(ASK_TOPIC_TEXT)
         return
-    await _generate(message, state, parsed, user, session_factory, llm, settings, usage)
+    await _generate(message, state, parsed, user, session_factory, llm, settings, usage, alerter)
 
 
 def _selection_text(topic: str, words: list[dict]) -> str:
@@ -116,6 +120,7 @@ async def _generate(
     llm: LLMClient,
     settings: Settings,
     usage: UsageLimiter,
+    alerter: AdminAlerter,
 ) -> None:
     topic, count = parsed
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
@@ -131,6 +136,7 @@ async def _generate(
         )
     except LLMError:
         logger.exception("topic word generation failed for %r", topic)
+        await alerter.record_llm_failure(message.bot, f"topic: {topic[:40]}")
         await state.clear()
         await message.answer(FAIL_TEXT)
         return
@@ -219,6 +225,7 @@ async def on_save(
     srs: SrsScheduler,
     settings: Settings,
     usage: UsageLimiter,
+    alerter: AdminAlerter,
 ) -> None:
     if await state.get_state() != TopicStates.selecting.state:
         await safe_answer(query, "Подборка уже не активна — /topic")
@@ -248,9 +255,7 @@ async def on_save(
             if not usage.check_and_count(user.id):
                 return LLMError("daily limit")
             try:
-                return await llm.enrich(
-                    word["lemma"], model=settings.model_fast, level=user.level
-                )
+                return await llm.enrich(word["lemma"], model=settings.model_fast, level=user.level)
             except LLMError as exc:
                 return exc
 
@@ -292,6 +297,89 @@ async def on_save(
 
 async def on_voice_while_choosing(message: Message) -> None:
     await message.answer("Пришли тему текстом, пожалуйста (или /stop, чтобы выйти).")
+
+
+# Day-one deck. The topic is deliberately mundane: the first cards a learner
+# sees should be words they will actually use this week, not vocabulary that
+# shows off the model.
+STARTER_TOPIC = "повседневная жизнь: дом, еда, транспорт, работа"
+STARTER_COUNT = 12
+
+
+async def build_starter_deck(
+    user: User,
+    session_factory: SessionFactory,
+    llm: LLMClient,
+    srs: SrsScheduler,
+    settings: Settings,
+    usage: UsageLimiter | None = None,
+    alerter: AdminAlerter | None = None,
+    bot: object | None = None,
+) -> list[str]:
+    """Fill a brand-new participant's deck so their first /review has content.
+
+    An empty deck on day one is the single most likely reason someone never
+    comes back, so this runs without asking: no selection UI, no friction.
+    Returns the lemmas actually created (empty on failure — never raises).
+    """
+    try:
+        word_list = await llm.topic_words(
+            STARTER_TOPIC, STARTER_COUNT, [], model=settings.model_fast, level=user.level
+        )
+    except Exception as exc:
+        # Broad on purpose: onboarding must never dead-end. The transport can
+        # raise things that are not LLMError (aiohttp errors, for one), and a
+        # stranded "собираю набор…" with no follow-up is the worst first
+        # impression the product can make.
+        logger.exception("starter deck generation failed for user %d", user.id)
+        if alerter is not None and bot is not None:
+            await alerter.record_llm_failure(bot, f"starter deck: {exc}")
+        return []
+
+    semaphore = asyncio.Semaphore(ENRICH_CONCURRENCY)
+
+    async def enrich_one(lemma: str) -> Enrichment | Exception:
+        async with semaphore:
+            if usage is not None and not usage.check_and_count(user.id):
+                return LLMError("daily limit")
+            try:
+                return await llm.enrich(lemma, model=settings.model_fast, level=user.level)
+            except Exception as exc:  # transport errors are not all LLMError
+                return exc
+
+    words = [w.lemma for w in word_list.words]
+    results = await asyncio.gather(
+        *(enrich_one(w) for w in words), return_exceptions=True
+    )
+
+    created: list[str] = []
+    failures = 0
+    try:
+        async with session_factory() as session:
+            for lemma, result in zip(words, results, strict=True):
+                if isinstance(result, BaseException):
+                    failures += 1
+                    continue
+                if await repo.find_card_by_lemma(session, result.lemma, user_id=user.id):
+                    continue
+                await repo.create_vocab_card(
+                    session, srs, user_id=user.id, text=lemma, enrichment=result.model_dump()
+                )
+                created.append(result.lemma)
+            await session.commit()
+    except Exception as exc:
+        logger.exception("storing the starter deck failed for user %d", user.id)
+        if alerter is not None and bot is not None:
+            await alerter.send(
+                bot, "starter-db", f"🚨 Стартовый набор не сохранился: {alerts_esc(exc)}"
+            )
+        return []
+    logger.info(
+        "starter deck for user %d: %d cards, %d failed", user.id, len(created), failures
+    )
+    if failures and alerter is not None and bot is not None:
+        await alerter.record_llm_failure(bot, f"starter deck: {failures} enrichments failed")
+    return created
 
 
 def create_router() -> Router:

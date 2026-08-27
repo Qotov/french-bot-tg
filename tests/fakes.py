@@ -250,6 +250,7 @@ class FakeLLM:
         self.talk_results = talk_results or []
         self.enrich_calls: list[str] = []
         self.correct_calls: list[tuple[str, str]] = []
+        self.correct_criteria: list[str | None] = []
         self.cloze_calls: list[tuple[str, list[str]]] = []
         self.topic_calls: list[tuple[str, int, list[str]]] = []
         self.voice_words_calls: list[str] = []
@@ -267,8 +268,17 @@ class FakeLLM:
         self.enrich_calls.append(text)
         return self._next(self.enrich_results)
 
-    async def correct(self, prompt: str, answer: str, *, model: str, level: str = "B1") -> Any:
+    async def correct(
+        self,
+        prompt: str,
+        answer: str,
+        *,
+        model: str,
+        level: str = "B1",
+        criteria: str | None = None,
+    ) -> Any:
         self.correct_calls.append((prompt, answer))
+        self.correct_criteria.append(criteria)
         return self._next(self.correct_results)
 
     async def cloze(self, topic: str, lemmas: Any, *, model: str, level: str = "B1") -> Any:

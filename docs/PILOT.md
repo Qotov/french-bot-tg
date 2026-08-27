@@ -7,13 +7,20 @@ Everything here is what you actually do, week by week, with 20–50 participants
 
 1. **Deploy.** A $5 VPS is plenty (see the systemd unit in the README). Set
    `ADMIN_USER_ID` to your own Telegram id; you are registered automatically.
+   Install `ffmpeg` (`apt install ffmpeg`) or pronunciation will be unavailable
+   — startup logs a warning if it is missing.
 2. **Set the roster cap.** `MAX_USERS=30` for the first cohort — a full slot is
    a better signal than an empty one, and you can raise it any time.
 3. **Smoke-test as a participant.** Generate one invite, join from a second
    Telegram account, and run the whole loop once: capture a word, `/topic`,
    `/review`, `/write` with a voice answer, `/talk`, `/drill`. Fifteen minutes
    now saves a bad first impression for thirty people.
-4. **Check the backup.** `ls data/backups/` after the first 03:00 run.
+4. **Check the backup.** `ls data/backups/` after the first 03:00 run, then
+   actually restore one into a scratch copy — an untested backup is not a
+   backup (the automated test covers the mechanism; do it once on the real box).
+5. **Confirm you get alerts.** You should receive a heartbeat at 09:00 with the
+   roster and retention numbers. If it does not arrive, the alerting path is
+   broken and every later outage will be invisible.
 
 ## The invite flow
 
@@ -52,6 +59,12 @@ Short, honest, with obligations. Copy this:
 
 Decline A0–A1 politely: the bot corrects production, and a true beginner has
 none yet. Point them at a textbook first and offer the next cohort.
+
+If someone is unsure of their level, tell them to answer "не знаю" at
+onboarding — `/placement` measures it in three minutes and is more accurate
+than a self-estimate. Anyone with a dated exam should set `/track` on day one;
+that is the cohort worth recruiting hardest, because the goal does the
+motivating for you.
 
 ## Weekly rhythm
 
@@ -93,7 +106,11 @@ grep the logs for `llm call model=` to see the volume, and for
 
 - **Someone reports the bot is silent.** Check they are registered
   (`/users`) and not over the daily cap. Unregistered senders get nothing by
-  design.
+  design, and the bot only ever answers in private chats.
+- **Reminders arrive at the wrong hour.** Their timezone: `/settings` → TZ.
+  Everyone defaults to the server's zone until they set their own.
+- **"I want out."** `/delete_me` erases their account and every card, review
+  and text. It is irreversible and needs the word УДАЛИТЬ to confirm.
 - **A participant is stuck in a session.** Tell them `/stop` — it cancels any
   active flow.
 - **Bad AI output.** The model is a config switch: point `MODEL_SMART` at a

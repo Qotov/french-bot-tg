@@ -10,15 +10,22 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
-def card_preview_kb(card_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+def card_preview_kb(card_id: int, *, with_audio: bool = True) -> InlineKeyboardMarkup:
+    rows = []
+    if with_audio:
+        rows.append(
             [
-                InlineKeyboardButton(text="🗑 Delete", callback_data=f"card:delete:{card_id}"),
-                InlineKeyboardButton(text="🔄 Regenerate", callback_data=f"card:regen:{card_id}"),
+                InlineKeyboardButton(text="🔊 Слово", callback_data=f"say:word:{card_id}"),
+                InlineKeyboardButton(text="🔊 Пример", callback_data=f"say:ex:{card_id}"),
             ]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton(text="🗑 Delete", callback_data=f"card:delete:{card_id}"),
+            InlineKeyboardButton(text="🔄 Regenerate", callback_data=f"card:regen:{card_id}"),
         ]
     )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def start_review_kb() -> InlineKeyboardMarkup:
@@ -37,17 +44,23 @@ def show_answer_kb(card_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def grade_kb(card_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="Again", callback_data=f"review:grade:{card_id}:1"),
-                InlineKeyboardButton(text="Hard", callback_data=f"review:grade:{card_id}:2"),
-                InlineKeyboardButton(text="Good", callback_data=f"review:grade:{card_id}:3"),
-                InlineKeyboardButton(text="Easy", callback_data=f"review:grade:{card_id}:4"),
-            ]
+def grade_kb(card_id: int, *, with_audio: bool = False) -> InlineKeyboardMarkup:
+    rows = []
+    if with_audio:
+        rows.append(
+            [InlineKeyboardButton(text="🔊 Послушать", callback_data=f"say:word:{card_id}")]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton(text="Again", callback_data=f"review:grade:{card_id}:1"),
+            InlineKeyboardButton(text="Hard", callback_data=f"review:grade:{card_id}:2"),
+            InlineKeyboardButton(text="Good", callback_data=f"review:grade:{card_id}:3"),
+            InlineKeyboardButton(text="Easy", callback_data=f"review:grade:{card_id}:4"),
         ]
     )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 
 
 def drill_options_kb(item_index: int, options: list[str]) -> InlineKeyboardMarkup:
@@ -68,6 +81,38 @@ def topic_select_kb(lemmas: list[str], selected: set[int]) -> InlineKeyboardMark
         InlineKeyboardButton(text=f"➕ Добавить ({len(selected)})", callback_data="topic:save"),
         InlineKeyboardButton(text="✖️ Отмена", callback_data="topic:cancel"),
     )
+    return builder.as_markup()
+
+
+def deck_kb(cards: list, offset: int, total: int, page_size: int) -> InlineKeyboardMarkup:
+    """One row per card (suspend/resume + delete), then pagination."""
+    builder = InlineKeyboardBuilder()
+    for card in cards:
+        mark = "▶️" if card.suspended else "⏸"
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{mark} {card.lemma[:24]}",
+                callback_data=f"deck:toggle:{card.id}:{offset}",
+            ),
+            InlineKeyboardButton(text="🗑", callback_data=f"deck:del:{card.id}:{offset}"),
+        )
+    nav = []
+    if offset > 0:
+        nav.append(
+            InlineKeyboardButton(text="←", callback_data=f"deck:page:{max(0, offset - page_size)}")
+        )
+    if offset + page_size < total:
+        nav.append(InlineKeyboardButton(text="→", callback_data=f"deck:page:{offset + page_size}"))
+    if nav:
+        builder.row(*nav)
+    return builder.as_markup()
+
+
+def timezone_kb(zones: list[tuple[str, str]]) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for label, zone in zones:
+        builder.button(text=label, callback_data=f"tz:{zone}")
+    builder.adjust(2)
     return builder.as_markup()
 
 

@@ -9,6 +9,7 @@ from aiogram.enums import ChatAction
 from aiogram.types import CallbackQuery, Message
 
 from frbot.bot import render
+from frbot.bot.alerts import AdminAlerter
 from frbot.bot.keyboards import card_preview_kb
 from frbot.bot.telegram_utils import (
     VOICE_MAX_DURATION,
@@ -28,6 +29,13 @@ from frbot.usage import OVER_LIMIT_TEXT, UsageLimiter
 logger = logging.getLogger(__name__)
 
 CAPTURE_MAX_LEN = 200
+
+
+def _audio_on(settings: Settings) -> bool:
+    """No 🔊 button when this host cannot actually produce audio."""
+    from frbot.bot.pronounce import audio_supported
+
+    return settings.tts_enabled and audio_supported()
 FAIL_TEXT = "⚠️ Не получилось обработать. Попробуй ещё раз через минуту."
 VOICE_FAIL_TEXT = "⚠️ Не получилось разобрать голосовое. Попробуй ещё раз."
 VOICE_NO_WORDS_TEXT = (
@@ -43,6 +51,7 @@ async def capture_one(
     llm: LLMClient,
     srs: SrsScheduler,
     settings: Settings,
+    alerter: AdminAlerter,
     usage: UsageLimiter | None = None,
 ) -> bool:
     """The capture pipeline for one word/phrase: dedupe, enrich, save, preview.
@@ -56,7 +65,7 @@ async def capture_one(
     if existing is not None:
         await message.answer(
             render.card_preview(existing, existing=True),
-            reply_markup=card_preview_kb(existing.id),
+            reply_markup=card_preview_kb(existing.id, with_audio=_audio_on(settings)),
         )
         return True
 
@@ -67,6 +76,7 @@ async def capture_one(
         enrichment = await llm.enrich(raw, model=settings.model_fast, level=user.level)
     except LLMError:
         logger.exception("enrichment failed for %r", raw)
+        await alerter.record_llm_failure(message.bot, f"enrich: {raw[:60]}")
         await message.answer(FAIL_TEXT)
         return False
 
@@ -75,7 +85,7 @@ async def capture_one(
         if existing is not None:
             await message.answer(
                 render.card_preview(existing, existing=True),
-                reply_markup=card_preview_kb(existing.id),
+                reply_markup=card_preview_kb(existing.id, with_audio=_audio_on(settings)),
             )
             return True
         card = await repo.create_vocab_card(
@@ -85,7 +95,10 @@ async def capture_one(
         card_id = card.id
 
     logger.info("captured card %d: %s", card_id, enrichment.lemma)
-    await message.answer(render.card_preview(card), reply_markup=card_preview_kb(card_id))
+    await message.answer(
+        render.card_preview(card),
+        reply_markup=card_preview_kb(card_id, with_audio=_audio_on(settings)),
+    )
     return True
 
 
@@ -97,6 +110,7 @@ async def handle_capture(
     srs: SrsScheduler,
     settings: Settings,
     usage: UsageLimiter,
+    alerter: AdminAlerter,
 ) -> None:
     raw = (message.text or "").strip()
     if not raw:
@@ -108,7 +122,7 @@ async def handle_capture(
         )
         return
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
-    await capture_one(message, raw, user, session_factory, llm, srs, settings, usage)
+    await capture_one(message, raw, user, session_factory, llm, srs, settings, alerter, usage)
 
 
 async def handle_voice_capture(
@@ -119,6 +133,7 @@ async def handle_voice_capture(
     srs: SrsScheduler,
     settings: Settings,
     usage: UsageLimiter,
+    alerter: AdminAlerter,
 ) -> None:
     """A voice note outside any session: extract the words to save from audio."""
     if message.voice.duration > VOICE_MAX_DURATION:
@@ -137,6 +152,7 @@ async def handle_voice_capture(
         extracted = await llm.extract_voice_words(data, mime_type, model=settings.model_fast)
     except LLMError:
         logger.exception("voice word extraction failed")
+        await alerter.record_llm_failure(message.bot, "voice extraction")
         await message.answer(VOICE_FAIL_TEXT)
         return
     if not extracted.words:
@@ -152,7 +168,7 @@ async def handle_voice_capture(
             )
             continue
         ok = await capture_one(
-            message, word, user, session_factory, llm, srs, settings, usage
+            message, word, user, session_factory, llm, srs, settings, alerter, usage
         )
         if not ok:
             remaining = len(extracted.words) - index - 1
@@ -163,9 +179,7 @@ async def handle_voice_capture(
             break
 
 
-async def on_delete(
-    query: CallbackQuery, user: User, session_factory: SessionFactory
-) -> None:
+async def on_delete(query: CallbackQuery, user: User, session_factory: SessionFactory) -> None:
     card_id = int(query.data.split(":")[2])
     async with session_factory() as session:
         deleted = await repo.delete_card(session, card_id, user_id=user.id)
@@ -184,6 +198,7 @@ async def on_regenerate(
     llm: LLMClient,
     settings: Settings,
     usage: UsageLimiter,
+    alerter: AdminAlerter,
 ) -> None:
     card_id = int(query.data.split(":")[2])
     async with session_factory() as session:
@@ -200,6 +215,7 @@ async def on_regenerate(
         enrichment = await llm.enrich(card.text, model=settings.model_fast, level=user.level)
     except LLMError:
         logger.exception("regeneration failed for card %d", card_id)
+        await alerter.record_llm_failure(query.bot, "regenerate")
         if isinstance(query.message, Message):
             await query.message.answer(FAIL_TEXT)
         return
@@ -230,7 +246,9 @@ async def on_regenerate(
 
     if isinstance(query.message, Message):
         await safe_edit_text(
-            query.message, render.card_preview(card), reply_markup=card_preview_kb(card_id)
+            query.message,
+            render.card_preview(card),
+            reply_markup=card_preview_kb(card_id, with_audio=_audio_on(settings)),
         )
 
 

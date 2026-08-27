@@ -16,6 +16,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from frbot.bot import render
+from frbot.bot.alerts import AdminAlerter
 from frbot.bot.keyboards import drill_options_kb
 from frbot.bot.telegram_utils import safe_edit_text
 from frbot.config import Settings
@@ -48,11 +49,12 @@ async def cmd_drill(
     llm: LLMClient,
     settings: Settings,
     usage: UsageLimiter,
+    alerter: AdminAlerter,
 ) -> None:
     today = datetime.now(UTC).astimezone(ZoneInfo(settings.tz)).date()
     async with session_factory() as session:
         await repo.ensure_drill_topics_seeded(session)
-        topic = await repo.get_topic_for_week(session, today=today)
+        topic = await repo.get_topic_for_week(session, today=today, track=user.track)
         if topic is None:
             await message.answer(FAIL_TEXT)
             return
@@ -68,6 +70,7 @@ async def cmd_drill(
         cloze = await llm.cloze(topic_title, lemmas, model=settings.model_fast, level=user.level)
     except LLMError:
         logger.exception("cloze generation failed for %s", topic_slug)
+        await alerter.record_llm_failure(message.bot, "cloze")
         await message.answer(FAIL_TEXT)
         return
 

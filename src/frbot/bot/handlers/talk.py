@@ -16,6 +16,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message
 
 from frbot.bot import render
+from frbot.bot.alerts import AdminAlerter
 from frbot.bot.telegram_utils import (
     VOICE_MAX_DURATION,
     VOICE_TOO_LONG_TEXT,
@@ -58,6 +59,7 @@ async def cmd_talk(
     llm: LLMClient,
     settings: Settings,
     usage: UsageLimiter,
+    alerter: AdminAlerter,
 ) -> None:
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     async with session_factory() as session:
@@ -69,6 +71,7 @@ async def cmd_talk(
         turn = await llm.talk_open(lemmas, model=settings.model_smart, level=user.level)
     except LLMError:
         logger.exception("talk opener failed")
+        await alerter.record_llm_failure(message.bot, "talk open")
         await message.answer(OPEN_FAIL_TEXT)
         return
     await state.set_state(TalkStates.talking)
@@ -104,6 +107,7 @@ async def handle_text_turn(
     srs: SrsScheduler,
     settings: Settings,
     usage: UsageLimiter,
+    alerter: AdminAlerter,
 ) -> None:
     text = (message.text or "").strip()
     if not text:
@@ -111,7 +115,18 @@ async def handle_text_turn(
     if len(text) > TURN_MAX_LEN:
         await message.answer(TOO_LONG_TEXT)
         return
-    await _turn(message, state, user, session_factory, llm, srs, settings, usage, text=text)
+    await _turn(
+        message,
+        state,
+        user,
+        session_factory,
+        llm,
+        srs,
+        settings,
+        usage,
+        alerter=alerter,
+        text=text,
+    )
 
 
 async def handle_voice_turn(
@@ -123,6 +138,7 @@ async def handle_voice_turn(
     srs: SrsScheduler,
     settings: Settings,
     usage: UsageLimiter,
+    alerter: AdminAlerter,
 ) -> None:
     if message.voice.duration > VOICE_MAX_DURATION:
         await message.answer(VOICE_TOO_LONG_TEXT)
@@ -131,7 +147,18 @@ async def handle_voice_turn(
     if audio is None:
         await message.answer(VOICE_FAIL_TEXT)
         return
-    await _turn(message, state, user, session_factory, llm, srs, settings, usage, audio=audio)
+    await _turn(
+        message,
+        state,
+        user,
+        session_factory,
+        llm,
+        srs,
+        settings,
+        usage,
+        alerter=alerter,
+        audio=audio,
+    )
 
 
 async def _create_error_cards(
@@ -142,16 +169,18 @@ async def _create_error_cards(
     said: str,
     user: User,
 ) -> int:
-    sentence = turn.corrected_fr.strip() or said
+    full_text = turn.corrected_fr.strip() or said
     created = 0
     now = datetime.now(UTC)
     async with session_factory() as session:
         cap_left = repo.ERROR_CARDS_DAILY_CAP - await repo.count_error_cards_created_since(
-            session, user_id=user.id, since=day_start_utc(now, settings.tz)
+            session, user_id=user.id, since=day_start_utc(now, repo.user_tz(user, settings))
         )
         for error in turn.errors:
             if cap_left <= 0:
                 break
+            # The sentence carrying this error, not the whole turn.
+            sentence = render.sentence_around(full_text, error.corrected)
             card = await repo.create_error_card(
                 session,
                 srs,
@@ -209,6 +238,7 @@ async def _turn(
     *,
     text: str | None = None,
     audio: tuple[bytes, str] | None = None,
+    alerter: AdminAlerter,
 ) -> None:
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     data = await state.get_data()
@@ -226,6 +256,7 @@ async def _turn(
         )
     except LLMError:
         logger.exception("talk turn failed")
+        await alerter.record_llm_failure(message.bot, "talk turn")
         await message.answer(FAIL_TEXT)  # state kept: the user can just retry
         return
 

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from frbot.config import TIME_RE, Settings
@@ -100,6 +100,37 @@ async def create_user(
     return user
 
 
+async def delete_user_data(session: AsyncSession, user_id: int) -> dict[str, int]:
+    """Erase everything belonging to one participant, including their account.
+
+    Used by /delete_me: people lend us their writing and their voice, so
+    withdrawing must be one command and must actually remove the data.
+    """
+    counts = {
+        "cards": await count_cards(session, user_id=user_id),
+        "reviews": (
+            await session.execute(select(func.count(Review.id)).where(Review.user_id == user_id))
+        ).scalar_one(),
+        "writings": (
+            await session.execute(select(func.count(Writing.id)).where(Writing.user_id == user_id))
+        ).scalar_one(),
+    }
+    await session.execute(delete(Review).where(Review.user_id == user_id))
+    await session.execute(delete(Card).where(Card.user_id == user_id))
+    await session.execute(delete(Writing).where(Writing.user_id == user_id))
+    await session.execute(delete(User).where(User.id == user_id))
+    logger.info("erased all data for user %d: %s", user_id, counts)
+    return counts
+
+
+async def set_user_track(session: AsyncSession, user_id: int, track: str) -> bool:
+    user = await session.get(User, user_id)
+    if user is None:
+        return False
+    user.track = track
+    return True
+
+
 async def set_user_level(session: AsyncSession, user_id: int, level: str) -> bool:
     if level not in LEVELS:
         return False
@@ -119,9 +150,7 @@ def _new_code() -> str:
     return "".join(secrets.choice(alphabet) for _ in range(8))
 
 
-async def create_invite(
-    session: AsyncSession, *, created_by: int, max_uses: int = 1
-) -> Invite:
+async def create_invite(session: AsyncSession, *, created_by: int, max_uses: int = 1) -> Invite:
     invite = Invite(code=_new_code(), created_by=created_by, max_uses=max(1, max_uses))
     session.add(invite)
     await session.flush()
@@ -153,9 +182,7 @@ async def get_card(session: AsyncSession, card_id: int, *, user_id: int) -> Card
     return card
 
 
-async def find_card_by_lemma(
-    session: AsyncSession, lemma: str, *, user_id: int
-) -> Card | None:
+async def find_card_by_lemma(session: AsyncSession, lemma: str, *, user_id: int) -> Card | None:
     """Vocab-card dedupe lookup (error cards keep synthetic lemmas and are skipped)."""
     stmt = (
         select(Card)
@@ -206,6 +233,34 @@ async def delete_card(session: AsyncSession, card_id: int, *, user_id: int) -> b
         return False
     await session.delete(card)
     return True
+
+
+DECK_PAGE_SIZE = 8
+
+
+async def list_cards_page(
+    session: AsyncSession, *, user_id: int, offset: int, limit: int = DECK_PAGE_SIZE
+) -> list[Card]:
+    stmt = (
+        select(Card)
+        .where(Card.user_id == user_id)
+        .order_by(Card.created_at.desc(), Card.id.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def set_card_suspended(
+    session: AsyncSession, card_id: int, *, user_id: int, suspended: bool
+) -> Card | None:
+    """Suspending keeps a card and its history but takes it out of reviews —
+    the right answer for a card that is wrong, annoying, or already known."""
+    card = await get_card(session, card_id, user_id=user_id)
+    if card is None:
+        return None
+    card.suspended = suspended
+    return card
 
 
 async def get_due_cards(
@@ -359,9 +414,7 @@ async def create_writing(session: AsyncSession, prompt: str, *, user_id: int) ->
     return writing
 
 
-async def get_writing(
-    session: AsyncSession, writing_id: int, *, user_id: int
-) -> Writing | None:
+async def get_writing(session: AsyncSession, writing_id: int, *, user_id: int) -> Writing | None:
     writing = await session.get(Writing, writing_id)
     if writing is None or writing.user_id != user_id:
         return None
@@ -472,7 +525,9 @@ async def ensure_drill_topics_seeded(session: AsyncSession) -> None:
     logger.info("seeded %d drill topics", len(SEED_TOPICS))
 
 
-async def get_topic_for_week(session: AsyncSession, *, today: date) -> DrillTopic | None:
+async def get_topic_for_week(
+    session: AsyncSession, *, today: date, track: str | None = None
+) -> DrillTopic | None:
     """The cohort's grammar topic for the ISO week containing `today`.
 
     Deterministic (no stored rotation pointer), so everyone in the pilot drills
@@ -484,6 +539,12 @@ async def get_topic_for_week(session: AsyncSession, *, today: date) -> DrillTopi
     )
     if not topics:
         return None
+    if track:
+        from frbot import tracks as tracks_module
+
+        by_slug = {t.slug: t for t in topics}
+        ordered_slugs = tracks_module.ordered_topic_slugs(track, list(by_slug))
+        topics = [by_slug[slug] for slug in ordered_slugs]
     return topics[today.isocalendar().week % len(topics)]
 
 
@@ -492,9 +553,7 @@ async def mark_topic_announced(session: AsyncSession, topic: DrillTopic, *, week
     await session.flush()
 
 
-async def get_recent_lemmas(
-    session: AsyncSession, *, user_id: int, limit: int = 20
-) -> list[str]:
+async def get_recent_lemmas(session: AsyncSession, *, user_id: int, limit: int = 20) -> list[str]:
     stmt = (
         select(Card.lemma)
         .where(
@@ -549,9 +608,7 @@ async def gather_stats(
 
     new_cards_7d = (
         await session.execute(
-            select(func.count(Card.id)).where(
-                Card.user_id == user_id, Card.created_at >= week_ago
-            )
+            select(func.count(Card.id)).where(Card.user_id == user_id, Card.created_at >= week_ago)
         )
     ).scalar_one()
 
@@ -576,9 +633,7 @@ async def gather_stats(
         new_cards_7d=new_cards_7d,
         top_error_types_30d=counts.most_common(5),
         total_cards=await count_cards(session, user_id=user_id),
-        active_days_7d=await count_active_days(
-            session, user_id=user_id, since=week_ago, tz=tz
-        ),
+        active_days_7d=await count_active_days(session, user_id=user_id, since=week_ago, tz=tz),
     )
 
 
@@ -592,6 +647,7 @@ class EffectiveConfig:
     daily_new_limit: int
     session_max: int
     level: str = "B1"
+    tz: str = "Europe/Paris"
 
 
 RUNTIME_KEYS = ("REMINDER_TIME", "WRITING_TIME", "DAILY_NEW_LIMIT", "SESSION_MAX")
@@ -603,6 +659,17 @@ def _time_or(value: str | None, default: str) -> str:
     if value:
         logger.warning("invalid time override %r, using %s", value, default)
     return default
+
+
+def _tz_or(value: str | None, default: str) -> str:
+    if not value:
+        return default
+    try:
+        ZoneInfo(value)
+    except Exception:
+        logger.warning("invalid timezone %r for a user, using %s", value, default)
+        return default
+    return value
 
 
 def _int_or(value: int | None, default: int) -> int:
@@ -619,6 +686,7 @@ def config_for_user(user: User | None, settings: Settings) -> EffectiveConfig:
             writing_time=settings.writing_time,
             daily_new_limit=settings.daily_new_limit,
             session_max=settings.session_max,
+            tz=settings.tz,
         )
     return EffectiveConfig(
         reminder_time=_time_or(user.reminder_time, settings.reminder_time),
@@ -626,7 +694,14 @@ def config_for_user(user: User | None, settings: Settings) -> EffectiveConfig:
         daily_new_limit=_int_or(user.daily_new_limit, settings.daily_new_limit),
         session_max=_int_or(user.session_max, settings.session_max),
         level=user.level or "B1",
+        tz=_tz_or(user.tz, settings.tz),
     )
+
+
+def user_tz(user: User | None, settings: Settings) -> str:
+    """The learner's own timezone — every day boundary and delivery time is
+    theirs, not the server's."""
+    return _tz_or(user.tz if user else None, settings.tz)
 
 
 async def get_effective_config(
@@ -635,13 +710,13 @@ async def get_effective_config(
     return config_for_user(await get_user(session, user_id), settings)
 
 
-async def set_user_setting(
-    session: AsyncSession, *, user_id: int, key: str, value: str
-) -> bool:
+async def set_user_setting(session: AsyncSession, *, user_id: int, key: str, value: str) -> bool:
     user = await session.get(User, user_id)
     if user is None:
         return False
-    if key == "REMINDER_TIME":
+    if key == "TZ":
+        user.tz = value
+    elif key == "REMINDER_TIME":
         user.reminder_time = value
     elif key == "WRITING_TIME":
         user.writing_time = value
