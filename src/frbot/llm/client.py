@@ -135,9 +135,7 @@ class LLMClient:
             temperature=TEMPERATURE_CORRECTION,
         )
 
-    async def talk_open(
-        self, lemmas: Sequence[str], *, model: str, level: str = "B1"
-    ) -> TalkTurn:
+    async def talk_open(self, lemmas: Sequence[str], *, model: str, level: str = "B1") -> TalkTurn:
         lemma_list = ", ".join(lemmas) if lemmas else "(none yet)"
         return await self.complete_json(
             model=model,

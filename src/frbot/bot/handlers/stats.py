@@ -21,14 +21,15 @@ async def cmd_stats(
     settings: Settings,
 ) -> None:
     now = datetime.now(UTC)
+    tz = repo.user_tz(user, settings)
     async with session_factory() as session:
         stats = await repo.gather_stats(
             session,
             user_id=user.id,
-            due_until=day_end_utc(now, settings.tz),
+            due_until=day_end_utc(now, tz),
             week_ago=now - timedelta(days=7),
             month_ago=now - timedelta(days=30),
-            tz=settings.tz,
+            tz=tz,
         )
     await message.answer(render.stats_message(stats))
 

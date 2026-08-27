@@ -39,9 +39,11 @@ Docs: [build spec](docs/TASK.md) · [running a pilot](docs/PILOT.md).
 | `/topic ресторан 10` | generate a pack of B2 words on any topic, pick which to keep |
 | `/drill` | weekly grammar topic, 5 fill-the-gap exercises |
 | `/stats` | due today, 7-day accuracy, top error types |
-| `/settings` | change reminder/writing times and limits on the fly |
+| `/cards` | browse your deck; pause a card or delete it |
+| `/settings` | change your timezone, reminder/writing times and limits |
 | `/stop` | cancel the current dialogue/session |
 | `/level` | switch level (A2 / B1 / B2) — recalibrates every AI prompt |
+| `/delete_me` | erase your account and all your data |
 | `/feedback` | write to the bot's author |
 | `/help` | command reference |
 
@@ -59,10 +61,18 @@ detected by lemma, so sending the same word twice never creates two cards.
 - **Sunday 18:00** — each participant's week in review + next week's grammar topic
 - **03:00** — SQLite online backup to `data/backups/` (last 14 kept)
 
-The two daily times are **per participant** — each person sets their own in
-`/settings`, and the change takes effect within the minute. The weekly grammar
-topic is shared by the whole cohort and derived from the ISO week number, so
-everyone drills the same thing at the same time.
+The two daily times are **per participant, in their own timezone** — each
+person sets both in `/settings`, and a change takes effect within the minute.
+The weekly grammar topic is shared by the whole cohort and derived from the ISO
+week number, so everyone drills the same thing at the same time.
+
+New participants get a **starter deck** the moment they pick their level, so
+their first `/review` has real content instead of an empty queue.
+
+The operator also gets a **daily heartbeat** (09:00) with the roster and the two
+retention numbers, plus immediate alerts if handlers start throwing or LLM calls
+begin failing in bulk — during a pilot an unnoticed outage looks exactly like
+churn in the data.
 
 ## Setup
 
@@ -171,7 +181,7 @@ just copying a snapshot back.
 ## Development
 
 ```bash
-uv run pytest          # 216 tests; no network — Telegram and the LLM are faked
+uv run pytest          # 250 tests; no network — Telegram and the LLM are faked
 uv run ruff check .    # lint
 uv run ruff format .   # format
 uv run alembic upgrade head   # apply migrations manually

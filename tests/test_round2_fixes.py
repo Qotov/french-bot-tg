@@ -45,7 +45,7 @@ def test_day_start_on_regular_day():
 
 
 async def test_regenerate_rejected_when_lemma_belongs_to_other_card(
-    fake_bot, session_factory, settings, user, usage
+    fake_bot, session_factory, settings, user, usage, alerter
 ):
     first = Enrichment.model_validate(load_fixture_json("enrichment_valid.json"))
     second = first.model_copy(update={"lemma": "quotidien"})
@@ -59,9 +59,17 @@ async def test_regenerate_rejected_when_lemma_belongs_to_other_card(
         srs,
         settings,
         usage,
+        alerter,
     )
     await handle_capture(
-        make_message("quotidien", bot=fake_bot), user, session_factory, llm, srs, settings, usage
+        make_message("quotidien", bot=fake_bot),
+        user,
+        session_factory,
+        llm,
+        srs,
+        settings,
+        usage,
+        alerter,
     )
     async with session_factory() as session:
         cards = list((await session.execute(select(Card).order_by(Card.id))).scalars())
@@ -69,7 +77,7 @@ async def test_regenerate_rejected_when_lemma_belongs_to_other_card(
 
     # Regenerating card 2 returns card 1's lemma -> rejected, card untouched.
     query = make_callback_query(f"card:regen:{cards[1].id}", bot=fake_bot)
-    await on_regenerate(query, user, session_factory, llm, settings, usage)
+    await on_regenerate(query, user, session_factory, llm, settings, usage, alerter)
 
     async with session_factory() as session:
         card = await session.get(Card, cards[1].id)

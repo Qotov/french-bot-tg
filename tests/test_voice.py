@@ -48,13 +48,22 @@ async def card_count(session_factory, kind: str = "vocab") -> int:
 # ------------------------------------------------------------- voice capture
 
 
-async def test_voice_capture_creates_cards(fake_bot, session_factory, settings, user, usage):
+async def test_voice_capture_creates_cards(
+    fake_bot, session_factory, settings, user, usage, alerter
+):
     llm = FakeLLM(
         voice_words_results=[VoiceWords(words=["boulangerie", "au fur et à mesure"])],
         enrich_results=[enrichment_for("boulangerie"), enrichment_for("au fur et à mesure")],
     )
     await handle_voice_capture(
-        make_voice_message(bot=fake_bot), user, session_factory, llm, srs(), settings, usage
+        make_voice_message(bot=fake_bot),
+        user,
+        session_factory,
+        llm,
+        srs(),
+        settings,
+        usage,
+        alerter,
     )
     assert llm.voice_words_calls == ["audio/ogg"]
     assert await card_count(session_factory) == 2
@@ -63,16 +72,23 @@ async def test_voice_capture_creates_cards(fake_bot, session_factory, settings, 
     assert any("au fur et à mesure" in t for t in previews)
 
 
-async def test_voice_capture_no_words(fake_bot, session_factory, settings, user, usage):
+async def test_voice_capture_no_words(fake_bot, session_factory, settings, user, usage, alerter):
     llm = FakeLLM(voice_words_results=[VoiceWords(words=[])])
     await handle_voice_capture(
-        make_voice_message(bot=fake_bot), user, session_factory, llm, srs(), settings, usage
+        make_voice_message(bot=fake_bot),
+        user,
+        session_factory,
+        llm,
+        srs(),
+        settings,
+        usage,
+        alerter,
     )
     assert fake_bot.session.sent_messages[-1].text == VOICE_NO_WORDS_TEXT
     assert await card_count(session_factory) == 0
 
 
-async def test_voice_capture_too_long(fake_bot, session_factory, settings, user, usage):
+async def test_voice_capture_too_long(fake_bot, session_factory, settings, user, usage, alerter):
     llm = FakeLLM()
     await handle_voice_capture(
         make_voice_message(duration=VOICE_MAX_DURATION + 1, bot=fake_bot),
@@ -82,27 +98,44 @@ async def test_voice_capture_too_long(fake_bot, session_factory, settings, user,
         srs(),
         settings,
         usage,
+        alerter,
     )
     assert llm.voice_words_calls == []
     assert "короче" in fake_bot.session.sent_messages[-1].text
 
 
-async def test_voice_capture_llm_failure(fake_bot, session_factory, settings, user, usage):
+async def test_voice_capture_llm_failure(fake_bot, session_factory, settings, user, usage, alerter):
     llm = FakeLLM(voice_words_results=[LLMError("down")])
     await handle_voice_capture(
-        make_voice_message(bot=fake_bot), user, session_factory, llm, srs(), settings, usage
+        make_voice_message(bot=fake_bot),
+        user,
+        session_factory,
+        llm,
+        srs(),
+        settings,
+        usage,
+        alerter,
     )
     assert "голосовое" in fake_bot.session.sent_messages[-1].text
     assert await card_count(session_factory) == 0
 
 
-async def test_voice_capture_dedupes_existing(fake_bot, session_factory, settings, user, usage):
+async def test_voice_capture_dedupes_existing(
+    fake_bot, session_factory, settings, user, usage, alerter
+):
     from tests.fakes import add_vocab_card
 
     await add_vocab_card(session_factory, "boulangerie")
     llm = FakeLLM(voice_words_results=[VoiceWords(words=["boulangerie"])])
     await handle_voice_capture(
-        make_voice_message(bot=fake_bot), user, session_factory, llm, srs(), settings, usage
+        make_voice_message(bot=fake_bot),
+        user,
+        session_factory,
+        llm,
+        srs(),
+        settings,
+        usage,
+        alerter,
     )
     assert llm.enrich_calls == []  # lemma pre-check hit
     assert await card_count(session_factory) == 1
@@ -113,7 +146,7 @@ async def test_voice_capture_dedupes_existing(fake_bot, session_factory, setting
 
 
 async def test_voice_answer_transcribed_and_corrected(
-    fake_bot, session_factory, settings, user, usage
+    fake_bot, session_factory, settings, user, usage, alerter
 ):
     correction = WritingCorrection.model_validate(load_fixture_json("correction_valid.json"))
     llm = FakeLLM(
@@ -125,7 +158,15 @@ async def test_voice_answer_transcribed_and_corrected(
 
     await cmd_write(make_message("/write", bot=fake_bot), state, user, session_factory, settings)
     await handle_voice_answer(
-        make_voice_message(bot=fake_bot), state, user, session_factory, llm, srs(), settings, usage
+        make_voice_message(bot=fake_bot),
+        state,
+        user,
+        session_factory,
+        llm,
+        srs(),
+        settings,
+        usage,
+        alerter,
     )
 
     _, answer = llm.correct_calls[0]
@@ -138,7 +179,7 @@ async def test_voice_answer_transcribed_and_corrected(
 
 
 async def test_voice_answer_empty_transcript_keeps_state(
-    fake_bot, session_factory, settings, user, usage
+    fake_bot, session_factory, settings, user, usage, alerter
 ):
     llm = FakeLLM(transcribe_results=[Transcript(transcript="  ")])
     state = make_state(fake_bot)
@@ -146,14 +187,22 @@ async def test_voice_answer_empty_transcript_keeps_state(
 
     await cmd_write(make_message("/write", bot=fake_bot), state, user, session_factory, settings)
     await handle_voice_answer(
-        make_voice_message(bot=fake_bot), state, user, session_factory, llm, srs(), settings, usage
+        make_voice_message(bot=fake_bot),
+        state,
+        user,
+        session_factory,
+        llm,
+        srs(),
+        settings,
+        usage,
+        alerter,
     )
     assert "Не расслышал" in fake_bot.session.sent_messages[-1].text
     assert await state.get_state() == WriteStates.awaiting_answer.state
 
 
 async def test_voice_capture_skips_overlong_extracted_phrase(
-    fake_bot, session_factory, settings, user, usage
+    fake_bot, session_factory, settings, user, usage, alerter
 ):
     from frbot.bot.handlers.capture import CAPTURE_MAX_LEN
 
@@ -163,7 +212,14 @@ async def test_voice_capture_skips_overlong_extracted_phrase(
         enrich_results=[enrichment_for("boulangerie")],
     )
     await handle_voice_capture(
-        make_voice_message(bot=fake_bot), user, session_factory, llm, srs(), settings, usage
+        make_voice_message(bot=fake_bot),
+        user,
+        session_factory,
+        llm,
+        srs(),
+        settings,
+        usage,
+        alerter,
     )
     assert llm.enrich_calls == ["boulangerie"]  # the utterance-sized item skipped
     assert await card_count(session_factory) == 1
@@ -171,14 +227,21 @@ async def test_voice_capture_skips_overlong_extracted_phrase(
 
 
 async def test_voice_capture_stops_after_first_llm_failure(
-    fake_bot, session_factory, settings, user, usage
+    fake_bot, session_factory, settings, user, usage, alerter
 ):
     llm = FakeLLM(
         voice_words_results=[VoiceWords(words=["premier", "deuxième", "troisième"])],
         enrich_results=[LLMError("down"), enrichment_for("deuxième"), enrichment_for("troisième")],
     )
     await handle_voice_capture(
-        make_voice_message(bot=fake_bot), user, session_factory, llm, srs(), settings, usage
+        make_voice_message(bot=fake_bot),
+        user,
+        session_factory,
+        llm,
+        srs(),
+        settings,
+        usage,
+        alerter,
     )
     assert llm.enrich_calls == ["premier"]  # no retries for the rest
     assert await card_count(session_factory) == 0

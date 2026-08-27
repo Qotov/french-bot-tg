@@ -28,7 +28,12 @@ from frbot.timeutil import tomorrow_end_utc
 logger = logging.getLogger(__name__)
 
 NOT_ACTIVE_TEXT = "Сессия не активна — начни заново: /review"
-EMPTY_TEXT = "🎉 Сегодня нечего повторять."
+EMPTY_TEXT = "🎉 Сегодня нечего повторять — всё выучено."
+NO_CARDS_TEXT = (
+    "В колоде пока пусто 🙂\n\n"
+    "Пришли любое французское слово — сделаю карточку. "
+    "Или набери <code>/topic ресторан</code> и я соберу подборку по теме."
+)
 
 
 class ReviewStates(StatesGroup):
@@ -63,7 +68,8 @@ async def start_session(
         )
         if queue.total == 0:
             await state.clear()
-            await answer(EMPTY_TEXT)
+            total = await repo.count_cards(session, user_id=user.id)
+            await answer(EMPTY_TEXT if total else NO_CARDS_TEXT)
             return
         first_card = await repo.get_card(session, queue.card_ids[0], user_id=user.id)
 
@@ -173,9 +179,7 @@ async def on_grade(
         card = await repo.get_card(session, card_id, user_id=user.id)
         if card is not None:
             result = srs.review(card.fsrs, rating, now)
-            await repo.apply_review(
-                session, card, result, user_id=user.id, rating=rating, now=now
-            )
+            await repo.apply_review(session, card, result, user_id=user.id, rating=rating, now=now)
             await session.commit()
             logger.info("graded card %d rating=%d next due %s", card_id, rating, result.due)
 

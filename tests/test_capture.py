@@ -34,10 +34,12 @@ async def card_count(session_factory) -> int:
         return (await session.execute(select(func.count(Card.id)))).scalar_one()
 
 
-async def test_capture_creates_card_with_preview(fake_bot, session_factory, settings, user, usage):
+async def test_capture_creates_card_with_preview(
+    fake_bot, session_factory, settings, user, usage, alerter
+):
     llm = FakeLLM(enrich_results=[enrichment()])
     message = make_message("au fur et à mesure", bot=fake_bot)
-    await handle_capture(message, user, session_factory, llm, srs(), settings, usage)
+    await handle_capture(message, user, session_factory, llm, srs(), settings, usage, alerter)
 
     async with session_factory() as session:
         card = await repo.find_card_by_lemma(session, "au fur et à mesure", user_id=ALLOWED_USER_ID)
@@ -58,7 +60,7 @@ async def test_capture_creates_card_with_preview(fake_bot, session_factory, sett
 
 
 async def test_capture_same_input_returns_existing_card(
-    fake_bot, session_factory, settings, user, usage
+    fake_bot, session_factory, settings, user, usage, alerter
 ):
     llm = FakeLLM(enrich_results=[enrichment()])
     await handle_capture(
@@ -69,6 +71,7 @@ async def test_capture_same_input_returns_existing_card(
         srs(),
         settings,
         usage,
+        alerter,
     )
     await handle_capture(
         make_message("Au fur et à mesure ", bot=fake_bot),
@@ -78,6 +81,7 @@ async def test_capture_same_input_returns_existing_card(
         srs(),
         settings,
         usage,
+        alerter,
     )
 
     assert await card_count(session_factory) == 1
@@ -87,7 +91,7 @@ async def test_capture_same_input_returns_existing_card(
 
 
 async def test_capture_dedupes_when_enrichment_returns_known_lemma(
-    fake_bot, session_factory, settings, user, usage
+    fake_bot, session_factory, settings, user, usage, alerter
 ):
     llm = FakeLLM(enrich_results=[enrichment()])
     await handle_capture(
@@ -98,6 +102,7 @@ async def test_capture_dedupes_when_enrichment_returns_known_lemma(
         srs(),
         settings,
         usage,
+        alerter,
     )
     # Different raw input, same lemma from the LLM.
     await handle_capture(
@@ -108,6 +113,7 @@ async def test_capture_dedupes_when_enrichment_returns_known_lemma(
         srs(),
         settings,
         usage,
+        alerter,
     )
 
     assert await card_count(session_factory) == 1
@@ -116,7 +122,7 @@ async def test_capture_dedupes_when_enrichment_returns_known_lemma(
 
 
 async def test_capture_llm_failure_reports_and_stores_nothing(
-    fake_bot, session_factory, settings, user, usage
+    fake_bot, session_factory, settings, user, usage, alerter
 ):
     llm = FakeLLM(enrich_results=[LLMError("down")])
     await handle_capture(
@@ -127,13 +133,14 @@ async def test_capture_llm_failure_reports_and_stores_nothing(
         srs(),
         settings,
         usage,
+        alerter,
     )
     assert await card_count(session_factory) == 0
     assert fake_bot.session.sent_messages[0].text == FAIL_TEXT
 
 
 async def test_capture_too_long_is_rejected_without_llm_call(
-    fake_bot, session_factory, settings, user, usage
+    fake_bot, session_factory, settings, user, usage, alerter
 ):
     llm = FakeLLM()
     await handle_capture(
@@ -144,13 +151,16 @@ async def test_capture_too_long_is_rejected_without_llm_call(
         srs(),
         settings,
         usage,
+        alerter,
     )
     assert llm.enrich_calls == []
     assert await card_count(session_factory) == 0
     assert "Слишком длинно" in fake_bot.session.sent_messages[0].text
 
 
-async def test_delete_callback_removes_card(fake_bot, session_factory, settings, user, usage):
+async def test_delete_callback_removes_card(
+    fake_bot, session_factory, settings, user, usage, alerter
+):
     llm = FakeLLM(enrich_results=[enrichment()])
     await handle_capture(
         make_message("au fur et à mesure", bot=fake_bot),
@@ -160,6 +170,7 @@ async def test_delete_callback_removes_card(fake_bot, session_factory, settings,
         srs(),
         settings,
         usage,
+        alerter,
     )
     async with session_factory() as session:
         card = await repo.find_card_by_lemma(session, "au fur et à mesure", user_id=ALLOWED_USER_ID)
@@ -175,7 +186,7 @@ async def test_delete_callback_removes_card(fake_bot, session_factory, settings,
 
 
 async def test_regenerate_callback_updates_enrichment(
-    fake_bot, session_factory, settings, user, usage
+    fake_bot, session_factory, settings, user, usage, alerter
 ):
     regenerated = enrichment().model_copy(update={"translation_ru": "постепенно (обновлено)"})
     llm = FakeLLM(enrich_results=[enrichment(), regenerated])
@@ -187,12 +198,13 @@ async def test_regenerate_callback_updates_enrichment(
         srs(),
         settings,
         usage,
+        alerter,
     )
     async with session_factory() as session:
         card = await repo.find_card_by_lemma(session, "au fur et à mesure", user_id=ALLOWED_USER_ID)
 
     query = make_callback_query(f"card:regen:{card.id}", bot=fake_bot)
-    await on_regenerate(query, user, session_factory, llm, settings, usage)
+    await on_regenerate(query, user, session_factory, llm, settings, usage, alerter)
 
     async with session_factory() as session:
         updated = await repo.get_card(session, card.id, user_id=ALLOWED_USER_ID)

@@ -82,13 +82,20 @@ async def test_weekly_topic_is_deterministic_and_shared(session_factory):
 
 
 async def test_drill_serves_five_items_for_active_topic(
-    fake_bot, session_factory, settings, user, usage
+    fake_bot, session_factory, settings, user, usage, alerter
 ):
     await add_vocab_card(session_factory, "marché")
     llm = FakeLLM(cloze_results=[cloze()])
     state = make_state(fake_bot)
     await cmd_drill(
-        make_message("/drill", bot=fake_bot), state, user, session_factory, llm, settings, usage
+        make_message("/drill", bot=fake_bot),
+        state,
+        user,
+        session_factory,
+        llm,
+        settings,
+        usage,
+        alerter,
     )
 
     # The topic is this ISO week's cohort topic.
@@ -113,12 +120,19 @@ async def test_drill_serves_five_items_for_active_topic(
 
 
 async def test_correct_answer_gives_feedback_and_no_card(
-    fake_bot, session_factory, settings, user, usage
+    fake_bot, session_factory, settings, user, usage, alerter
 ):
     llm = FakeLLM(cloze_results=[cloze()])
     state = make_state(fake_bot)
     await cmd_drill(
-        make_message("/drill", bot=fake_bot), state, user, session_factory, llm, settings, usage
+        make_message("/drill", bot=fake_bot),
+        state,
+        user,
+        session_factory,
+        llm,
+        settings,
+        usage,
+        alerter,
     )
 
     # Item 0: correct option is "suis" at index 0.
@@ -134,12 +148,19 @@ async def test_correct_answer_gives_feedback_and_no_card(
 
 
 async def test_wrong_answer_creates_drill_error_card(
-    fake_bot, session_factory, settings, user, usage
+    fake_bot, session_factory, settings, user, usage, alerter
 ):
     llm = FakeLLM(cloze_results=[cloze()])
     state = make_state(fake_bot)
     await cmd_drill(
-        make_message("/drill", bot=fake_bot), state, user, session_factory, llm, settings, usage
+        make_message("/drill", bot=fake_bot),
+        state,
+        user,
+        session_factory,
+        llm,
+        settings,
+        usage,
+        alerter,
     )
 
     # Item 0: wrong option "ai" at index 1.
@@ -165,11 +186,20 @@ async def test_wrong_answer_creates_drill_error_card(
     assert "suis" in card.text  # sentence stored with the gap filled
 
 
-async def test_full_drill_run_summary_and_counts(fake_bot, session_factory, settings, user, usage):
+async def test_full_drill_run_summary_and_counts(
+    fake_bot, session_factory, settings, user, usage, alerter
+):
     llm = FakeLLM(cloze_results=[cloze()])
     state = make_state(fake_bot)
     await cmd_drill(
-        make_message("/drill", bot=fake_bot), state, user, session_factory, llm, settings, usage
+        make_message("/drill", bot=fake_bot),
+        state,
+        user,
+        session_factory,
+        llm,
+        settings,
+        usage,
+        alerter,
     )
 
     items = (await state.get_data())["items"]
@@ -192,11 +222,18 @@ async def test_full_drill_run_summary_and_counts(fake_bot, session_factory, sett
     assert await drill_error_count(session_factory) == 1
 
 
-async def test_stale_answer_ignored(fake_bot, session_factory, settings, user, usage):
+async def test_stale_answer_ignored(fake_bot, session_factory, settings, user, usage, alerter):
     llm = FakeLLM(cloze_results=[cloze()])
     state = make_state(fake_bot)
     await cmd_drill(
-        make_message("/drill", bot=fake_bot), state, user, session_factory, llm, settings, usage
+        make_message("/drill", bot=fake_bot),
+        state,
+        user,
+        session_factory,
+        llm,
+        settings,
+        usage,
+        alerter,
     )
     await on_answer(
         make_callback_query("drill:answer:0:0", bot=fake_bot), state, user, session_factory, srs()
@@ -209,18 +246,25 @@ async def test_stale_answer_ignored(fake_bot, session_factory, settings, user, u
     assert await drill_error_count(session_factory) == 0
 
 
-async def test_drill_llm_failure(fake_bot, session_factory, settings, user, usage):
+async def test_drill_llm_failure(fake_bot, session_factory, settings, user, usage, alerter):
     llm = FakeLLM(cloze_results=[LLMError("down")])
     state = make_state(fake_bot)
     await cmd_drill(
-        make_message("/drill", bot=fake_bot), state, user, session_factory, llm, settings, usage
+        make_message("/drill", bot=fake_bot),
+        state,
+        user,
+        session_factory,
+        llm,
+        settings,
+        usage,
+        alerter,
     )
     assert fake_bot.session.sent_messages[-1].text == FAIL_TEXT
     assert await state.get_state() is None
 
 
 async def test_drill_errors_are_scoped_to_the_user(
-    fake_bot, session_factory, settings, user, usage
+    fake_bot, session_factory, settings, user, usage, alerter
 ):
     """A wrong answer creates a card for the answering user only."""
     from frbot.db.models import User
@@ -233,7 +277,14 @@ async def test_drill_errors_are_scoped_to_the_user(
     llm = FakeLLM(cloze_results=[cloze()])
     state = make_state(fake_bot)
     await cmd_drill(
-        make_message("/drill", bot=fake_bot), state, user, session_factory, llm, settings, usage
+        make_message("/drill", bot=fake_bot),
+        state,
+        user,
+        session_factory,
+        llm,
+        settings,
+        usage,
+        alerter,
     )
     await on_answer(
         make_callback_query("drill:answer:0:1", bot=fake_bot), state, user, session_factory, srs()

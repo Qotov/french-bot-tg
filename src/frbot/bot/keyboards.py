@@ -71,6 +71,38 @@ def topic_select_kb(lemmas: list[str], selected: set[int]) -> InlineKeyboardMark
     return builder.as_markup()
 
 
+def deck_kb(cards: list, offset: int, total: int, page_size: int) -> InlineKeyboardMarkup:
+    """One row per card (suspend/resume + delete), then pagination."""
+    builder = InlineKeyboardBuilder()
+    for card in cards:
+        mark = "▶️" if card.suspended else "⏸"
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{mark} {card.lemma[:24]}",
+                callback_data=f"deck:toggle:{card.id}:{offset}",
+            ),
+            InlineKeyboardButton(text="🗑", callback_data=f"deck:del:{card.id}:{offset}"),
+        )
+    nav = []
+    if offset > 0:
+        nav.append(
+            InlineKeyboardButton(text="←", callback_data=f"deck:page:{max(0, offset - page_size)}")
+        )
+    if offset + page_size < total:
+        nav.append(InlineKeyboardButton(text="→", callback_data=f"deck:page:{offset + page_size}"))
+    if nav:
+        builder.row(*nav)
+    return builder.as_markup()
+
+
+def timezone_kb(zones: list[tuple[str, str]]) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for label, zone in zones:
+        builder.button(text=label, callback_data=f"tz:{zone}")
+    builder.adjust(2)
+    return builder.as_markup()
+
+
 def settings_kb(values: dict[str, str]) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for key, value in values.items():

@@ -58,3 +58,11 @@ def usage(settings):
     from frbot.usage import UsageLimiter
 
     return UsageLimiter(settings.daily_llm_actions, settings.tz)
+
+
+@pytest.fixture
+def alerter():
+    """Real AdminAlerter aimed at the test admin; sends land in fake_bot."""
+    from frbot.bot.alerts import AdminAlerter
+
+    return AdminAlerter(ALLOWED_USER_ID)

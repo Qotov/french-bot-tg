@@ -20,8 +20,7 @@ from frbot.db.session import SessionFactory
 logger = logging.getLogger(__name__)
 
 NOT_INVITED_TEXT = (
-    "Это закрытая бета французского бота. Вход по приглашению:\n"
-    "<code>/start КОД</code>"
+    "Это закрытая бета французского бота. Вход по приглашению:\n<code>/start КОД</code>"
 )
 
 

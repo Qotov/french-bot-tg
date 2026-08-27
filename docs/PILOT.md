@@ -13,7 +13,12 @@ Everything here is what you actually do, week by week, with 20–50 participants
    Telegram account, and run the whole loop once: capture a word, `/topic`,
    `/review`, `/write` with a voice answer, `/talk`, `/drill`. Fifteen minutes
    now saves a bad first impression for thirty people.
-4. **Check the backup.** `ls data/backups/` after the first 03:00 run.
+4. **Check the backup.** `ls data/backups/` after the first 03:00 run, then
+   actually restore one into a scratch copy — an untested backup is not a
+   backup (the automated test covers the mechanism; do it once on the real box).
+5. **Confirm you get alerts.** You should receive a heartbeat at 09:00 with the
+   roster and retention numbers. If it does not arrive, the alerting path is
+   broken and every later outage will be invisible.
 
 ## The invite flow
 
@@ -93,7 +98,11 @@ grep the logs for `llm call model=` to see the volume, and for
 
 - **Someone reports the bot is silent.** Check they are registered
   (`/users`) and not over the daily cap. Unregistered senders get nothing by
-  design.
+  design, and the bot only ever answers in private chats.
+- **Reminders arrive at the wrong hour.** Their timezone: `/settings` → TZ.
+  Everyone defaults to the server's zone until they set their own.
+- **"I want out."** `/delete_me` erases their account and every card, review
+  and text. It is irreversible and needs the word УДАЛИТЬ to confirm.
 - **A participant is stuck in a session.** Tell them `/stop` — it cancels any
   active flow.
 - **Bad AI output.** The model is a config switch: point `MODEL_SMART` at a
