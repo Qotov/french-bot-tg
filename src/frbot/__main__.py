@@ -11,7 +11,9 @@ from aiogram.fsm.storage.memory import MemoryStorage, SimpleEventIsolation
 from aiogram.types import BotCommand, ErrorEvent
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from frbot.bot import pronounce
 from frbot.bot.alerts import AdminAlerter
+from frbot.bot.audio import VoiceCache, cache_dir
 from frbot.bot.handlers import (
     admin,
     capture,
@@ -45,6 +47,7 @@ def build_dispatcher(
     srs: SrsScheduler | None = None,
     usage: UsageLimiter | None = None,
     alerter: AdminAlerter | None = None,
+    voice_cache: VoiceCache | None = None,
 ) -> Dispatcher:
     # SimpleEventIsolation serializes update handling per chat/user, so a
     # double-tap on an inline button cannot run two handlers concurrently
@@ -59,6 +62,7 @@ def build_dispatcher(
     dp.include_router(review.create_router())
     dp.include_router(stats.create_router())
     dp.include_router(deck.create_router())
+    dp.include_router(pronounce.create_router())
     dp.include_router(write.create_router())
     dp.include_router(drill.create_router())
     dp.include_router(settings_handlers.create_router())
@@ -71,6 +75,7 @@ def build_dispatcher(
     dp["srs"] = srs or SrsScheduler(settings.desired_retention)
     dp["usage"] = usage or UsageLimiter(settings.daily_llm_actions, settings.tz)
     dp["alerter"] = alerter or AdminAlerter(settings.admin_user_id)
+    dp["voice_cache"] = voice_cache or VoiceCache(cache_dir(settings.db_url))
     dp.errors.register(on_unhandled_error)
     return dp
 
@@ -154,6 +159,7 @@ async def main() -> None:
         await session.commit()
         user_count = await repo.count_users(session)
     logger.info("pilot: %d/%d users registered", user_count, settings.max_users)
+    pronounce.startup_check(settings)
 
     dp = build_dispatcher(settings, session_factory)
     bot = build_bot(settings)

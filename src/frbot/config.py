@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     # so enrichment/drills and correction could be split again via .env.
     model_fast: str = "gemini-3.5-flash-lite"
     model_smart: str = "gemini-3.5-flash-lite"
+    # Pronunciation. Audio output is billed per token but each distinct phrase
+    # is synthesised once and cached on disk for the whole cohort.
+    model_tts: str = "gemini-3.1-flash-tts-preview"
+    tts_voice: str = "Kore"
+    tts_enabled: bool = True
     daily_new_limit: int = 15
     session_max: int = 30
     reminder_time: str = "08:30"

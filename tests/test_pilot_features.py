@@ -314,3 +314,46 @@ async def test_all_jobs_including_heartbeat_are_registered(fake_bot, session_fac
             assert scheduler.get_job(job_id) is not None, job_id
     finally:
         scheduler.shutdown(wait=False)
+
+
+async def test_users_in_different_timezones_are_not_renotified_every_tick(
+    fake_bot, session_factory, settings
+):
+    """Participants can legitimately be on different calendar dates at the same
+    instant. The delivered-today set must not let them purge each other's
+    records — that re-sent everyone's reminder on every single tick."""
+    from zoneinfo import ZoneInfo
+
+    from frbot.jobs.reminders import _sent_today, drain_deliveries, minute_tick
+    from tests.test_jobs import fake_dispatcher
+
+    _sent_today.clear()
+    east, west = "Pacific/Kiritimati", "Pacific/Midway"  # ~26 hours apart
+
+    def local_hh_mm(tz: str) -> str:
+        return datetime.now(UTC).astimezone(ZoneInfo(tz)).strftime("%H:%M")
+
+    async with session_factory() as session:
+        session.add(User(id=111, chat_id=111, tz=east, reminder_time=local_hh_mm(east)))
+        session.add(User(id=222, chat_id=222, tz=west, reminder_time=local_hh_mm(west)))
+        await session.commit()
+
+    for _ in range(3):
+        await minute_tick(fake_bot, fake_dispatcher(), session_factory, settings)
+        await drain_deliveries()
+
+    counts: dict[int, int] = {}
+    for message in fake_bot.session.sent_messages:
+        counts[message.chat_id] = counts.get(message.chat_id, 0) + 1
+    assert counts == {111: 1, 222: 1}
+
+
+async def test_delivered_set_does_not_grow_without_bound(fake_bot, session_factory, settings):
+    from frbot.jobs.reminders import _mark_sent, _sent_today
+
+    _sent_today.clear()
+    base = datetime(2026, 5, 1, tzinfo=UTC).date()
+    for offset in range(10):
+        assert _mark_sent(1, "reminder", base + timedelta(days=offset)) is True
+    # Only the recent window is retained.
+    assert len(_sent_today) <= 3

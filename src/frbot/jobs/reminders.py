@@ -78,14 +78,22 @@ def _daily(hh_mm: str, tz: str) -> CronTrigger:
 
 
 def _mark_sent(user_id: int, kind: str, today: date) -> bool:
-    """False when this user already got this message today."""
+    """False when this user already got this message on their own local day.
+
+    Participants span timezones, so two users can legitimately be on different
+    calendar dates at the same instant. Entries are therefore aged out by
+    distance from the newest date seen — never by "differs from the date I am
+    looking at right now", which would let users in different zones purge each
+    other's records and get re-notified on every tick.
+    """
     key = (user_id, kind, today)
     if key in _sent_today:
         return False
-    # Keep the set small: drop entries from previous days.
-    for stale in [k for k in _sent_today if k[2] != today]:
-        _sent_today.discard(stale)
     _sent_today.add(key)
+    newest = max(k[2] for k in _sent_today)
+    cutoff = newest - timedelta(days=2)  # widest possible spread is ~26 hours
+    for stale in [k for k in _sent_today if k[2] < cutoff]:
+        _sent_today.discard(stale)
     return True
 
 

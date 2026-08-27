@@ -19,7 +19,7 @@ from frbot.bot.keyboards import grade_kb, show_answer_kb
 from frbot.bot.telegram_utils import safe_answer, safe_clear_markup, safe_edit_text
 from frbot.config import Settings
 from frbot.db import repo
-from frbot.db.models import User
+from frbot.db.models import CardKind, User
 from frbot.db.session import SessionFactory
 from frbot.srs.queue import build_queue
 from frbot.srs.scheduler import SrsScheduler
@@ -149,7 +149,9 @@ async def on_show(
         await safe_edit_text(
             query.message,
             _full_text(card, data["index"], data["total"]),
-            reply_markup=grade_kb(card.id),
+            reply_markup=grade_kb(
+                card.id, with_audio=settings.tts_enabled and card.kind == CardKind.vocab.value
+            ),
         )
     await query.answer()
 

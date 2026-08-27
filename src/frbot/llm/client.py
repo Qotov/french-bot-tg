@@ -99,6 +99,55 @@ class LLMClient:
             temperature=TEMPERATURE_DRILL,
         )
 
+    async def synthesize(self, text: str, *, model: str, voice: str) -> bytes:
+        """French pronunciation as raw 24 kHz mono PCM.
+
+        Uses the same transport retry ladder as the text calls but skips the
+        JSON layer entirely — the payload is audio, and there is nothing to
+        validate or re-prompt.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(len(self._backoff) + 1):
+            if attempt > 0:
+                await asyncio.sleep(self._backoff[attempt - 1])
+            try:
+                response = await self._client.aio.models.generate_content(
+                    model=model,
+                    contents=(
+                        "Prononce ce mot ou cette expression en français, "
+                        f"clairement et à vitesse normale : {text}"
+                    ),
+                    config=genai_types.GenerateContentConfig(
+                        response_modalities=["AUDIO"],
+                        speech_config=genai_types.SpeechConfig(
+                            language_code="fr-FR",
+                            voice_config=genai_types.VoiceConfig(
+                                prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(
+                                    voice_name=voice
+                                )
+                            ),
+                        ),
+                    ),
+                )
+            except genai_errors.APIError as exc:
+                code = exc.code or 0
+                if code == 429 or code >= 500:
+                    logger.warning("tts status %s (attempt %d)", code, attempt + 1)
+                    last_exc = exc
+                    continue
+                raise LLMError(f"Gemini TTS error {code}") from exc
+            except (httpx.HTTPError, ConnectionError, TimeoutError) as exc:
+                logger.warning("tts connection error (attempt %d): %s", attempt + 1, exc)
+                last_exc = exc
+                continue
+
+            audio = _extract_audio(response)
+            if audio is None:
+                raise LLMError("Gemini returned no audio")
+            logger.info("tts model=%s bytes=%d text=%r", model, len(audio), text[:40])
+            return audio
+        raise LLMError("Gemini TTS unavailable") from last_exc
+
     async def topic_words(
         self,
         topic: str,
@@ -243,6 +292,18 @@ class LLMClient:
             return response.text or ""
         logger.error("llm call failed after %d attempts", len(self._backoff) + 1)
         raise LLMError("Gemini API unavailable") from last_exc
+
+
+def _extract_audio(response: Any) -> bytes | None:
+    """Pull inline audio bytes out of a generate_content response."""
+    for candidate in getattr(response, "candidates", None) or []:
+        content = getattr(candidate, "content", None)
+        for part in getattr(content, "parts", None) or []:
+            inline = getattr(part, "inline_data", None)
+            data = getattr(inline, "data", None)
+            if data:
+                return data
+    return None
 
 
 def _audio_part(data: bytes, mime_type: str) -> genai_types.Part:

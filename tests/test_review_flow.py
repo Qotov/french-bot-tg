@@ -86,7 +86,9 @@ async def test_full_session_two_cards(fake_bot, session_factory, settings, user)
     shown = fake_bot.session.sent("EditMessageText")[-1]
     assert "по мере" in shown.text  # back contains the translation
     grade_labels = [b.text for row in shown.reply_markup.inline_keyboard for b in row]
-    assert grade_labels == ["Again", "Hard", "Good", "Easy"]
+    assert grade_labels[-4:] == ["Again", "Hard", "Good", "Easy"]
+    # A vocab card also offers pronunciation.
+    assert any("🔊" in label for label in grade_labels)
 
     # Grade Good -> next card arrives.
     await on_grade(

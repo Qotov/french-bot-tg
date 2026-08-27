@@ -10,15 +10,22 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
-def card_preview_kb(card_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+def card_preview_kb(card_id: int, *, with_audio: bool = True) -> InlineKeyboardMarkup:
+    rows = []
+    if with_audio:
+        rows.append(
             [
-                InlineKeyboardButton(text="🗑 Delete", callback_data=f"card:delete:{card_id}"),
-                InlineKeyboardButton(text="🔄 Regenerate", callback_data=f"card:regen:{card_id}"),
+                InlineKeyboardButton(text="🔊 Слово", callback_data=f"say:word:{card_id}"),
+                InlineKeyboardButton(text="🔊 Пример", callback_data=f"say:ex:{card_id}"),
             ]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton(text="🗑 Delete", callback_data=f"card:delete:{card_id}"),
+            InlineKeyboardButton(text="🔄 Regenerate", callback_data=f"card:regen:{card_id}"),
         ]
     )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def start_review_kb() -> InlineKeyboardMarkup:
@@ -37,17 +44,23 @@ def show_answer_kb(card_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def grade_kb(card_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="Again", callback_data=f"review:grade:{card_id}:1"),
-                InlineKeyboardButton(text="Hard", callback_data=f"review:grade:{card_id}:2"),
-                InlineKeyboardButton(text="Good", callback_data=f"review:grade:{card_id}:3"),
-                InlineKeyboardButton(text="Easy", callback_data=f"review:grade:{card_id}:4"),
-            ]
+def grade_kb(card_id: int, *, with_audio: bool = False) -> InlineKeyboardMarkup:
+    rows = []
+    if with_audio:
+        rows.append(
+            [InlineKeyboardButton(text="🔊 Послушать", callback_data=f"say:word:{card_id}")]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton(text="Again", callback_data=f"review:grade:{card_id}:1"),
+            InlineKeyboardButton(text="Hard", callback_data=f"review:grade:{card_id}:2"),
+            InlineKeyboardButton(text="Good", callback_data=f"review:grade:{card_id}:3"),
+            InlineKeyboardButton(text="Easy", callback_data=f"review:grade:{card_id}:4"),
         ]
     )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 
 
 def drill_options_kb(item_index: int, options: list[str]) -> InlineKeyboardMarkup:
