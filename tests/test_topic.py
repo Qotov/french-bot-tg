@@ -92,7 +92,7 @@ def test_parse_topic_args():
 # --------------------------------------------------------------------- flows
 
 
-async def test_topic_generates_selection(fake_bot, session_factory, settings):
+async def test_topic_generates_selection(fake_bot, session_factory, settings, user, usage):
     await add_vocab_card(session_factory, "maison")
     llm = FakeLLM(topic_results=[RESTAURANT_WORDS])
     state = make_state(fake_bot)
@@ -100,9 +100,11 @@ async def test_topic_generates_selection(fake_bot, session_factory, settings):
         make_message("/topic ресторан 5", bot=fake_bot),
         command_obj("ресторан 5"),
         state,
+        user,
         session_factory,
         llm,
         settings,
+        usage,
     )
     topic, count, known = llm.topic_calls[0]
     assert topic == "ресторан"
@@ -118,27 +120,31 @@ async def test_topic_generates_selection(fake_bot, session_factory, settings):
     assert any("Добавить (3)" in label for label in labels)
 
 
-async def test_topic_without_args_asks_then_generates(fake_bot, session_factory, settings):
+async def test_topic_without_args_asks_then_generates(
+    fake_bot, session_factory, settings, user, usage
+):
     llm = FakeLLM(topic_results=[RESTAURANT_WORDS])
     state = make_state(fake_bot)
     await cmd_topic(
         make_message("/topic", bot=fake_bot),
         command_obj(None),
         state,
+        user,
         session_factory,
         llm,
         settings,
+        usage,
     )
     assert await state.get_state() == TopicStates.choosing.state
     assert "тему" in fake_bot.session.sent_messages[-1].text
 
     await handle_topic_input(
-        make_message("ресторан 4", bot=fake_bot), state, session_factory, llm, settings
+        make_message("ресторан 4", bot=fake_bot), state, user, session_factory, llm, settings, usage
     )
     assert await state.get_state() == TopicStates.selecting.state
 
 
-async def test_known_words_dropped_from_selection(fake_bot, session_factory, settings):
+async def test_known_words_dropped_from_selection(fake_bot, session_factory, settings, user, usage):
     await add_vocab_card(session_factory, "commander")
     llm = FakeLLM(topic_results=[RESTAURANT_WORDS])
     state = make_state(fake_bot)
@@ -146,9 +152,11 @@ async def test_known_words_dropped_from_selection(fake_bot, session_factory, set
         make_message("/topic ресторан", bot=fake_bot),
         command_obj("ресторан"),
         state,
+        user,
         session_factory,
         llm,
         settings,
+        usage,
     )
     data = await state.get_data()
     lemmas = [w["lemma"] for w in data["words"]]
@@ -156,7 +164,9 @@ async def test_known_words_dropped_from_selection(fake_bot, session_factory, set
     assert len(lemmas) == 2
 
 
-async def test_toggle_and_save_creates_selected_cards(fake_bot, session_factory, settings):
+async def test_toggle_and_save_creates_selected_cards(
+    fake_bot, session_factory, settings, user, usage
+):
     llm = FakeLLM(
         topic_results=[RESTAURANT_WORDS],
         enrich_results=[enrichment_for("l'addition"), enrichment_for("le pourboire")],
@@ -166,9 +176,11 @@ async def test_toggle_and_save_creates_selected_cards(fake_bot, session_factory,
         make_message("/topic ресторан", bot=fake_bot),
         command_obj("ресторан"),
         state,
+        user,
         session_factory,
         llm,
         settings,
+        usage,
     )
     # Deselect index 1 ("commander").
     await on_toggle(await pack_query("topic:toggle:1", state, fake_bot), state)
@@ -177,10 +189,12 @@ async def test_toggle_and_save_creates_selected_cards(fake_bot, session_factory,
     await on_save(
         await pack_query("topic:save", state, fake_bot),
         state,
+        user,
         session_factory,
         llm,
         srs(),
         settings,
+        usage,
     )
     assert await vocab_count(session_factory) == 2
     assert sorted(llm.enrich_calls) == ["l'addition", "le pourboire"]
@@ -189,7 +203,9 @@ async def test_toggle_and_save_creates_selected_cards(fake_bot, session_factory,
     assert await state.get_state() is None
 
 
-async def test_save_skips_duplicates_from_enrichment(fake_bot, session_factory, settings):
+async def test_save_skips_duplicates_from_enrichment(
+    fake_bot, session_factory, settings, user, usage
+):
     # Enrichment maps both selected words to the same lemma -> one card.
     llm = FakeLLM(
         topic_results=[RESTAURANT_WORDS],
@@ -200,55 +216,63 @@ async def test_save_skips_duplicates_from_enrichment(fake_bot, session_factory, 
         make_message("/topic ресторан", bot=fake_bot),
         command_obj("ресторан"),
         state,
+        user,
         session_factory,
         llm,
         settings,
+        usage,
     )
     await on_toggle(await pack_query("topic:toggle:2", state, fake_bot), state)  # keep 0, 1
     await on_save(
         await pack_query("topic:save", state, fake_bot),
         state,
+        user,
         session_factory,
         llm,
         srs(),
         settings,
+        usage,
     )
     assert await vocab_count(session_factory) == 1
     assert "Уже были в колоде: 1" in fake_bot.session.sent_messages[-1].text
 
 
-async def test_cancel_clears_state(fake_bot, session_factory, settings):
+async def test_cancel_clears_state(fake_bot, session_factory, settings, user, usage):
     llm = FakeLLM(topic_results=[RESTAURANT_WORDS])
     state = make_state(fake_bot)
     await cmd_topic(
         make_message("/topic ресторан", bot=fake_bot),
         command_obj("ресторан"),
         state,
+        user,
         session_factory,
         llm,
         settings,
+        usage,
     )
     await on_cancel(await pack_query("topic:cancel", state, fake_bot), state)
     assert await state.get_state() is None
     assert await vocab_count(session_factory) == 0
 
 
-async def test_topic_llm_failure(fake_bot, session_factory, settings):
+async def test_topic_llm_failure(fake_bot, session_factory, settings, user, usage):
     llm = FakeLLM(topic_results=[LLMError("down")])
     state = make_state(fake_bot)
     await cmd_topic(
         make_message("/topic ресторан", bot=fake_bot),
         command_obj("ресторан"),
         state,
+        user,
         session_factory,
         llm,
         settings,
+        usage,
     )
     assert fake_bot.session.sent_messages[-1].text == FAIL_TEXT
     assert await state.get_state() is None
 
 
-async def test_all_words_already_known(fake_bot, session_factory, settings):
+async def test_all_words_already_known(fake_bot, session_factory, settings, user, usage):
     for word in ("l'addition", "commander", "le pourboire"):
         await add_vocab_card(session_factory, word)
     llm = FakeLLM(topic_results=[RESTAURANT_WORDS])
@@ -257,9 +281,11 @@ async def test_all_words_already_known(fake_bot, session_factory, settings):
         make_message("/topic ресторан", bot=fake_bot),
         command_obj("ресторан"),
         state,
+        user,
         session_factory,
         llm,
         settings,
+        usage,
     )
     assert "уже в колоде" in fake_bot.session.sent_messages[-1].text
     assert await state.get_state() is None
@@ -269,7 +295,7 @@ def test_fixture_sanity():
     assert load_fixture_json("enrichment_valid.json")["lemma"]
 
 
-async def test_stale_pack_keyboard_is_inert(fake_bot, session_factory, settings):
+async def test_stale_pack_keyboard_is_inert(fake_bot, session_factory, settings, user, usage):
     """A superseded pack's keyboard must not drive the new pack's state."""
     llm = FakeLLM(topic_results=[RESTAURANT_WORDS, RESTAURANT_WORDS])
     state = make_state(fake_bot)
@@ -277,18 +303,22 @@ async def test_stale_pack_keyboard_is_inert(fake_bot, session_factory, settings)
         make_message("/topic ресторан", bot=fake_bot),
         command_obj("ресторан"),
         state,
+        user,
         session_factory,
         llm,
         settings,
+        usage,
     )
     old_mid = (await state.get_data())["message_id"]
     await cmd_topic(
         make_message("/topic voyage", bot=fake_bot),
         command_obj("voyage"),
         state,
+        user,
         session_factory,
         llm,
         settings,
+        usage,
     )
     # Tap the OLD keyboard: toggle must not change the new selection,
     # cancel must not kill the new pack's state.

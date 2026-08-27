@@ -151,6 +151,22 @@ def correction_message(correction, created_cards: int) -> str:
     return fit_lines(lines)
 
 
+def weekly_summary(stats) -> str:
+    """The Sunday push: same numbers as /stats, framed as a week in review."""
+    rate = "—" if stats.correct_rate_7d is None else f"{round(stats.correct_rate_7d * 100)}%"
+    lines = ["📅 <b>Итоги недели</b>"]
+    if stats.reviews_7d:
+        lines.append(f"Занимался(ась) дней: {stats.active_days_7d} из 7")
+        lines.append(f"Повторений: {stats.reviews_7d} · правильных: {rate}")
+    else:
+        lines.append("На этой неделе повторений не было — начни с /review 🙂")
+    lines.append(f"Новых карточек: {stats.new_cards_7d} · всего в колоде: {stats.total_cards}")
+    if stats.top_error_types_30d:
+        top = ", ".join(f"{render_type}" for render_type, _ in stats.top_error_types_30d[:3])
+        lines.append(f"Над чем поработать: {esc(top)}")
+    return "\n".join(lines)
+
+
 def stats_message(stats) -> str:
     rate = "—" if stats.correct_rate_7d is None else f"{round(stats.correct_rate_7d * 100)}%"
     lines = [
@@ -159,6 +175,8 @@ def stats_message(stats) -> str:
         f"Повторений за 7 дней: {stats.reviews_7d}",
         f"Правильных (Good + Easy): {rate}",
         f"Новых карточек за 7 дней: {stats.new_cards_7d}",
+        f"Всего карточек: {stats.total_cards}",
+        f"Дней с занятиями за 7 дней: {stats.active_days_7d}",
     ]
     if stats.top_error_types_30d:
         lines.append("Частые ошибки за 30 дней:")

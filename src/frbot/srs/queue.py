@@ -29,22 +29,25 @@ class ReviewQueue:
 async def build_queue(
     session: AsyncSession,
     *,
+    user_id: int,
     now: datetime,
     tz: str,
     session_max: int,
     daily_new_limit: int,
 ) -> ReviewQueue:
-    due_cards = await repo.get_due_cards(session, now=now, limit=session_max)
+    due_cards = await repo.get_due_cards(session, user_id=user_id, now=now, limit=session_max)
 
     new_cards = []
     remaining = session_max - len(due_cards)
     if remaining > 0:
         introduced_today = await repo.count_new_introduced_since(
-            session, since=day_start_utc(now, tz)
+            session, user_id=user_id, since=day_start_utc(now, tz)
         )
         allowance = max(0, daily_new_limit - introduced_today)
         if allowance > 0:
-            new_cards = await repo.get_new_cards(session, limit=min(remaining, allowance))
+            new_cards = await repo.get_new_cards(
+                session, user_id=user_id, limit=min(remaining, allowance)
+            )
 
     return ReviewQueue(
         card_ids=[card.id for card in [*due_cards, *new_cards]],

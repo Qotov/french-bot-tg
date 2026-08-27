@@ -67,41 +67,51 @@ class LLMClient:
 
     # -- public API ----------------------------------------------------------
 
-    async def enrich(self, text: str, *, model: str) -> Enrichment:
+    async def enrich(self, text: str, *, model: str, level: str = "B1") -> Enrichment:
         return await self.complete_json(
             model=model,
-            system=prompts.ENRICH_SYSTEM,
+            system=prompts.with_level(prompts.ENRICH_SYSTEM, level),
             contents=prompts.ENRICH_USER.format(text=text),
             schema=Enrichment,
             temperature=TEMPERATURE_ENRICH,
         )
 
-    async def correct(self, prompt: str, answer: str, *, model: str) -> WritingCorrection:
+    async def correct(
+        self, prompt: str, answer: str, *, model: str, level: str = "B1"
+    ) -> WritingCorrection:
         return await self.complete_json(
             model=model,
-            system=prompts.CORRECTION_SYSTEM,
+            system=prompts.with_level(prompts.CORRECTION_SYSTEM, level),
             contents=prompts.CORRECTION_USER.format(prompt=prompt, answer=answer),
             schema=WritingCorrection,
             temperature=TEMPERATURE_CORRECTION,
         )
 
-    async def cloze(self, topic: str, lemmas: Sequence[str], *, model: str) -> ClozeSet:
+    async def cloze(
+        self, topic: str, lemmas: Sequence[str], *, model: str, level: str = "B1"
+    ) -> ClozeSet:
         lemma_list = ", ".join(lemmas) if lemmas else "(none yet)"
         return await self.complete_json(
             model=model,
-            system=prompts.CLOZE_SYSTEM,
+            system=prompts.with_level(prompts.CLOZE_SYSTEM, level),
             contents=prompts.CLOZE_USER.format(topic=topic, lemmas=lemma_list),
             schema=ClozeSet,
             temperature=TEMPERATURE_DRILL,
         )
 
     async def topic_words(
-        self, topic: str, count: int, known_lemmas: Sequence[str], *, model: str
+        self,
+        topic: str,
+        count: int,
+        known_lemmas: Sequence[str],
+        *,
+        model: str,
+        level: str = "B1",
     ) -> TopicWordList:
         known = ", ".join(known_lemmas) if known_lemmas else "(nothing yet)"
         return await self.complete_json(
             model=model,
-            system=prompts.TOPIC_SYSTEM,
+            system=prompts.with_level(prompts.TOPIC_SYSTEM, level),
             contents=prompts.TOPIC_USER.format(topic=topic, count=count, known=known),
             schema=TopicWordList,
             temperature=TEMPERATURE_ENRICH,
@@ -125,11 +135,13 @@ class LLMClient:
             temperature=TEMPERATURE_CORRECTION,
         )
 
-    async def talk_open(self, lemmas: Sequence[str], *, model: str) -> TalkTurn:
+    async def talk_open(
+        self, lemmas: Sequence[str], *, model: str, level: str = "B1"
+    ) -> TalkTurn:
         lemma_list = ", ".join(lemmas) if lemmas else "(none yet)"
         return await self.complete_json(
             model=model,
-            system=prompts.TALK_SYSTEM,
+            system=prompts.with_level(prompts.TALK_SYSTEM, level),
             contents=prompts.TALK_OPENER_USER.format(lemmas=lemma_list),
             schema=TalkTurn,
             temperature=TEMPERATURE_TALK,
@@ -140,6 +152,7 @@ class LLMClient:
         history: str,
         *,
         model: str,
+        level: str = "B1",
         text: str | None = None,
         audio: tuple[bytes, str] | None = None,
     ) -> TalkTurn:
@@ -154,7 +167,7 @@ class LLMClient:
             contents = [preamble, _audio_part(data, mime_type)]
         return await self.complete_json(
             model=model,
-            system=prompts.TALK_SYSTEM,
+            system=prompts.with_level(prompts.TALK_SYSTEM, level),
             contents=contents,
             schema=TalkTurn,
             temperature=TEMPERATURE_TALK,

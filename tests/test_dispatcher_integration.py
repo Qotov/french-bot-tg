@@ -35,7 +35,7 @@ def llm() -> FakeLLM:
 
 
 @pytest.fixture
-def dp(settings, session_factory, llm):
+def dp(settings, session_factory, llm, user):
     return build_dispatcher(
         settings, session_factory, llm=llm, srs=SrsScheduler(settings.desired_retention)
     )
@@ -120,22 +120,49 @@ async def test_drill_flow_via_dispatcher(dp, fake_bot, session_factory, llm):
     assert count == 1
 
 
-async def test_settings_edit_flow_via_dispatcher(dp, fake_bot, session_factory):
+async def test_settings_edit_flow_via_dispatcher(dp, fake_bot, session_factory, settings, user):
     await dp.feed_update(fake_bot, message_update("/settings"))
     await dp.feed_update(fake_bot, callback_update("settings:edit:SESSION_MAX", update_id=2))
     await dp.feed_update(fake_bot, message_update("12", update_id=3))
     from frbot.db import repo
 
     async with session_factory() as session:
-        assert await repo.get_setting(session, "SESSION_MAX") == "12"
+        cfg = await repo.get_effective_config(session, settings, user_id=user.id)
+    assert cfg.session_max == 12
     assert any("SESSION_MAX = 12" in (m.text or "") for m in fake_bot.session.sent_messages)
 
 
-async def test_whitelist_blocks_everything_via_dispatcher(dp, fake_bot, llm):
-    for i, text in enumerate(["/start", "/review", "bonjour"]):
+async def test_strangers_reach_nothing_but_the_invite_door(dp, fake_bot, llm):
+    """Only /start answers a stranger — and only to ask for an invite code."""
+    for i, text in enumerate(["/review", "bonjour", "/stats"]):
         await dp.feed_update(fake_bot, message_update(text, update_id=i + 1, user_id=OTHER_USER_ID))
     assert fake_bot.session.sent_messages == []
     assert llm.enrich_calls == []
+
+    await dp.feed_update(fake_bot, message_update("/start", update_id=9, user_id=OTHER_USER_ID))
+    sent = fake_bot.session.sent_messages
+    assert len(sent) == 1
+    assert "приглашения" in sent[0].text
+
+
+async def test_cards_are_isolated_between_users(dp, fake_bot, session_factory, llm, user):
+    """The whole point of the pilot refactor: one user never sees another's deck."""
+    from frbot.db import repo
+    from frbot.db.models import User
+
+    other_id = 999_100
+    async with session_factory() as session:
+        session.add(User(id=other_id, chat_id=other_id))
+        await session.commit()
+
+    await dp.feed_update(fake_bot, message_update("au fur et à mesure"))
+    async with session_factory() as session:
+        mine = await repo.count_cards(session, user_id=user.id)
+        theirs = await repo.count_cards(session, user_id=other_id)
+        found = await repo.find_card_by_lemma(session, "au fur et à mesure", user_id=other_id)
+    assert mine == 1
+    assert theirs == 0
+    assert found is None  # the other user cannot even look it up
 
 
 async def test_topic_flow_via_dispatcher(dp, fake_bot, session_factory, llm):

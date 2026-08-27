@@ -9,7 +9,7 @@ from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import JSON, Date, DateTime, ForeignKey, TypeDecorator
+from sqlalchemy import JSON, BigInteger, Date, DateTime, ForeignKey, TypeDecorator
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -55,6 +55,7 @@ class Card(Base):
     __tablename__ = "cards"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(BigInteger, index=True, nullable=True)
     text: Mapped[str]
     lemma: Mapped[str] = mapped_column(index=True)
     kind: Mapped[str]  # CardKind
@@ -75,6 +76,7 @@ class Review(Base):
     __tablename__ = "reviews"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(BigInteger, index=True, nullable=True)
     card_id: Mapped[int] = mapped_column(ForeignKey("cards.id", ondelete="CASCADE"), index=True)
     rating: Mapped[int]  # 1-4
     reviewed_at: Mapped[datetime] = mapped_column(UTCDateTime, index=True)
@@ -87,6 +89,7 @@ class Writing(Base):
     __tablename__ = "writings"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(BigInteger, index=True, nullable=True)
     prompt: Mapped[str]
     answer: Mapped[str | None] = mapped_column(nullable=True)
     corrections: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -101,6 +104,41 @@ class DrillTopic(Base):
     title_fr: Mapped[str]
     position: Mapped[int]
     active_week: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+
+LEVELS = ("A2", "B1", "B2")
+
+
+class User(Base):
+    """A pilot participant. id is the Telegram user id. The four nullable
+    settings columns override the .env defaults when set (see
+    repo.effective_config)."""
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    username: Mapped[str | None] = mapped_column(nullable=True)
+    first_name: Mapped[str | None] = mapped_column(nullable=True)
+    chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    level: Mapped[str] = mapped_column(default="B1")  # one of LEVELS
+    invite_code: Mapped[str | None] = mapped_column(nullable=True)
+    is_admin: Mapped[bool] = mapped_column(default=False)
+    active: Mapped[bool] = mapped_column(default=True)
+    reminder_time: Mapped[str | None] = mapped_column(nullable=True)
+    writing_time: Mapped[str | None] = mapped_column(nullable=True)
+    daily_new_limit: Mapped[int | None] = mapped_column(nullable=True)
+    session_max: Mapped[int | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class Invite(Base):
+    __tablename__ = "invites"
+
+    code: Mapped[str] = mapped_column(primary_key=True)
+    created_by: Mapped[int] = mapped_column(BigInteger)
+    max_uses: Mapped[int] = mapped_column(default=1)
+    used_count: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
 class AppSetting(Base):

@@ -20,10 +20,11 @@ from frbot.bot.keyboards import drill_options_kb
 from frbot.bot.telegram_utils import safe_edit_text
 from frbot.config import Settings
 from frbot.db import repo
-from frbot.db.models import CardKind
+from frbot.db.models import CardKind, User
 from frbot.db.session import SessionFactory
 from frbot.llm.client import LLMClient, LLMError
 from frbot.srs.scheduler import SrsScheduler
+from frbot.usage import OVER_LIMIT_TEXT, UsageLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -42,23 +43,29 @@ def _item_text(item: dict, index: int, total: int) -> str:
 async def cmd_drill(
     message: Message,
     state: FSMContext,
+    user: User,
     session_factory: SessionFactory,
     llm: LLMClient,
     settings: Settings,
+    usage: UsageLimiter,
 ) -> None:
     today = datetime.now(UTC).astimezone(ZoneInfo(settings.tz)).date()
     async with session_factory() as session:
         await repo.ensure_drill_topics_seeded(session)
-        topic = await repo.get_active_drill_topic(session)
+        topic = await repo.get_topic_for_week(session, today=today)
         if topic is None:
-            topic = await repo.rotate_drill_topic(session, week=today)
-        lemmas = await repo.get_recent_lemmas(session)
+            await message.answer(FAIL_TEXT)
+            return
+        lemmas = await repo.get_recent_lemmas(session, user_id=user.id)
         await session.commit()
         topic_slug, topic_title = topic.slug, topic.title_fr
 
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+    if not usage.check_and_count(user.id):
+        await message.answer(OVER_LIMIT_TEXT)
+        return
     try:
-        cloze = await llm.cloze(topic_title, lemmas, model=settings.model_fast)
+        cloze = await llm.cloze(topic_title, lemmas, model=settings.model_fast, level=user.level)
     except LLMError:
         logger.exception("cloze generation failed for %s", topic_slug)
         await message.answer(FAIL_TEXT)
@@ -87,6 +94,7 @@ async def cmd_drill(
 async def on_answer(
     query: CallbackQuery,
     state: FSMContext,
+    user: User,
     session_factory: SessionFactory,
     srs: SrsScheduler,
 ) -> None:
@@ -125,6 +133,7 @@ async def on_answer(
             card = await repo.create_error_card(
                 session,
                 srs,
+                user_id=user.id,
                 kind=CardKind.drill_error.value,
                 sentence=item["sentence_with_gap"].replace("___", correct, 1),
                 original=chosen,

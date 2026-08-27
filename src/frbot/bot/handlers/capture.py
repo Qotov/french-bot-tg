@@ -19,9 +19,11 @@ from frbot.bot.telegram_utils import (
 )
 from frbot.config import Settings
 from frbot.db import repo
+from frbot.db.models import User
 from frbot.db.session import SessionFactory
 from frbot.llm.client import LLMClient, LLMError
 from frbot.srs.scheduler import SrsScheduler
+from frbot.usage import OVER_LIMIT_TEXT, UsageLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -36,10 +38,12 @@ VOICE_NO_WORDS_TEXT = (
 async def capture_one(
     message: Message,
     raw: str,
+    user: User,
     session_factory: SessionFactory,
     llm: LLMClient,
     srs: SrsScheduler,
     settings: Settings,
+    usage: UsageLimiter | None = None,
 ) -> bool:
     """The capture pipeline for one word/phrase: dedupe, enrich, save, preview.
 
@@ -48,7 +52,7 @@ async def capture_one(
     """
     # Cheap pre-check: the raw input may already be a stored lemma.
     async with session_factory() as session:
-        existing = await repo.find_card_by_lemma(session, raw)
+        existing = await repo.find_card_by_lemma(session, raw, user_id=user.id)
     if existing is not None:
         await message.answer(
             render.card_preview(existing, existing=True),
@@ -56,15 +60,18 @@ async def capture_one(
         )
         return True
 
+    if usage is not None and not usage.check_and_count(user.id):
+        await message.answer(OVER_LIMIT_TEXT)
+        return False
     try:
-        enrichment = await llm.enrich(raw, model=settings.model_fast)
+        enrichment = await llm.enrich(raw, model=settings.model_fast, level=user.level)
     except LLMError:
         logger.exception("enrichment failed for %r", raw)
         await message.answer(FAIL_TEXT)
         return False
 
     async with session_factory() as session:
-        existing = await repo.find_card_by_lemma(session, enrichment.lemma)
+        existing = await repo.find_card_by_lemma(session, enrichment.lemma, user_id=user.id)
         if existing is not None:
             await message.answer(
                 render.card_preview(existing, existing=True),
@@ -72,7 +79,7 @@ async def capture_one(
             )
             return True
         card = await repo.create_vocab_card(
-            session, srs, text=raw, enrichment=enrichment.model_dump()
+            session, srs, user_id=user.id, text=raw, enrichment=enrichment.model_dump()
         )
         await session.commit()
         card_id = card.id
@@ -84,10 +91,12 @@ async def capture_one(
 
 async def handle_capture(
     message: Message,
+    user: User,
     session_factory: SessionFactory,
     llm: LLMClient,
     srs: SrsScheduler,
     settings: Settings,
+    usage: UsageLimiter,
 ) -> None:
     raw = (message.text or "").strip()
     if not raw:
@@ -99,15 +108,17 @@ async def handle_capture(
         )
         return
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
-    await capture_one(message, raw, session_factory, llm, srs, settings)
+    await capture_one(message, raw, user, session_factory, llm, srs, settings, usage)
 
 
 async def handle_voice_capture(
     message: Message,
+    user: User,
     session_factory: SessionFactory,
     llm: LLMClient,
     srs: SrsScheduler,
     settings: Settings,
+    usage: UsageLimiter,
 ) -> None:
     """A voice note outside any session: extract the words to save from audio."""
     if message.voice.duration > VOICE_MAX_DURATION:
@@ -119,6 +130,9 @@ async def handle_voice_capture(
         await message.answer(VOICE_FAIL_TEXT)
         return
     data, mime_type = audio
+    if not usage.check_and_count(user.id):
+        await message.answer(OVER_LIMIT_TEXT)
+        return
     try:
         extracted = await llm.extract_voice_words(data, mime_type, model=settings.model_fast)
     except LLMError:
@@ -137,7 +151,9 @@ async def handle_voice_capture(
                 f"«{render.esc(word[:60])}…» — слишком длинно для карточки, пропускаю."
             )
             continue
-        ok = await capture_one(message, word, session_factory, llm, srs, settings)
+        ok = await capture_one(
+            message, word, user, session_factory, llm, srs, settings, usage
+        )
         if not ok:
             remaining = len(extracted.words) - index - 1
             if remaining:
@@ -147,10 +163,12 @@ async def handle_voice_capture(
             break
 
 
-async def on_delete(query: CallbackQuery, session_factory: SessionFactory) -> None:
+async def on_delete(
+    query: CallbackQuery, user: User, session_factory: SessionFactory
+) -> None:
     card_id = int(query.data.split(":")[2])
     async with session_factory() as session:
-        deleted = await repo.delete_card(session, card_id)
+        deleted = await repo.delete_card(session, card_id, user_id=user.id)
         await session.commit()
     if isinstance(query.message, Message):
         await safe_edit_text(
@@ -161,20 +179,25 @@ async def on_delete(query: CallbackQuery, session_factory: SessionFactory) -> No
 
 async def on_regenerate(
     query: CallbackQuery,
+    user: User,
     session_factory: SessionFactory,
     llm: LLMClient,
     settings: Settings,
+    usage: UsageLimiter,
 ) -> None:
     card_id = int(query.data.split(":")[2])
     async with session_factory() as session:
-        card = await repo.get_card(session, card_id)
+        card = await repo.get_card(session, card_id, user_id=user.id)
     if card is None:
         await query.answer("Карточка не найдена.", show_alert=True)
         return
 
+    if not usage.check_and_count(user.id):
+        await safe_answer(query, "Дневной лимит запросов исчерпан.", show_alert=True)
+        return
     await safe_answer(query, "Генерирую заново…")
     try:
-        enrichment = await llm.enrich(card.text, model=settings.model_fast)
+        enrichment = await llm.enrich(card.text, model=settings.model_fast, level=user.level)
     except LLMError:
         logger.exception("regeneration failed for card %d", card_id)
         if isinstance(query.message, Message):
@@ -182,11 +205,11 @@ async def on_regenerate(
         return
 
     async with session_factory() as session:
-        card = await repo.get_card(session, card_id)
+        card = await repo.get_card(session, card_id, user_id=user.id)
         if card is None:
             return
         new_lemma = enrichment.lemma.strip().lower()
-        other = await repo.find_card_by_lemma(session, new_lemma)
+        other = await repo.find_card_by_lemma(session, new_lemma, user_id=user.id)
         if other is not None and other.id != card_id:
             # Overwriting would duplicate the other card's content while this
             # card keeps its own dedupe key; leave the card untouched.

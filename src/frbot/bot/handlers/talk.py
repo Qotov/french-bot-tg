@@ -23,12 +23,13 @@ from frbot.bot.telegram_utils import (
 )
 from frbot.config import Settings
 from frbot.db import repo
-from frbot.db.models import CardKind
+from frbot.db.models import CardKind, User
 from frbot.db.session import SessionFactory
 from frbot.llm.client import LLMClient, LLMError
 from frbot.llm.schemas import TalkTurn
 from frbot.srs.scheduler import SrsScheduler
 from frbot.timeutil import day_start_utc
+from frbot.usage import OVER_LIMIT_TEXT, UsageLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -52,15 +53,20 @@ class TalkStates(StatesGroup):
 async def cmd_talk(
     message: Message,
     state: FSMContext,
+    user: User,
     session_factory: SessionFactory,
     llm: LLMClient,
     settings: Settings,
+    usage: UsageLimiter,
 ) -> None:
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     async with session_factory() as session:
-        lemmas = await repo.get_recent_lemmas(session, limit=10)
+        lemmas = await repo.get_recent_lemmas(session, user_id=user.id, limit=10)
+    if not usage.check_and_count(user.id):
+        await message.answer(OVER_LIMIT_TEXT)
+        return
     try:
-        turn = await llm.talk_open(lemmas, model=settings.model_smart)
+        turn = await llm.talk_open(lemmas, model=settings.model_smart, level=user.level)
     except LLMError:
         logger.exception("talk opener failed")
         await message.answer(OPEN_FAIL_TEXT)
@@ -92,10 +98,12 @@ async def cmd_stop(message: Message, state: FSMContext) -> None:
 async def handle_text_turn(
     message: Message,
     state: FSMContext,
+    user: User,
     session_factory: SessionFactory,
     llm: LLMClient,
     srs: SrsScheduler,
     settings: Settings,
+    usage: UsageLimiter,
 ) -> None:
     text = (message.text or "").strip()
     if not text:
@@ -103,16 +111,18 @@ async def handle_text_turn(
     if len(text) > TURN_MAX_LEN:
         await message.answer(TOO_LONG_TEXT)
         return
-    await _turn(message, state, session_factory, llm, srs, settings, text=text)
+    await _turn(message, state, user, session_factory, llm, srs, settings, usage, text=text)
 
 
 async def handle_voice_turn(
     message: Message,
     state: FSMContext,
+    user: User,
     session_factory: SessionFactory,
     llm: LLMClient,
     srs: SrsScheduler,
     settings: Settings,
+    usage: UsageLimiter,
 ) -> None:
     if message.voice.duration > VOICE_MAX_DURATION:
         await message.answer(VOICE_TOO_LONG_TEXT)
@@ -121,7 +131,7 @@ async def handle_voice_turn(
     if audio is None:
         await message.answer(VOICE_FAIL_TEXT)
         return
-    await _turn(message, state, session_factory, llm, srs, settings, audio=audio)
+    await _turn(message, state, user, session_factory, llm, srs, settings, usage, audio=audio)
 
 
 async def _create_error_cards(
@@ -130,13 +140,14 @@ async def _create_error_cards(
     settings: Settings,
     turn: TalkTurn,
     said: str,
+    user: User,
 ) -> int:
     sentence = turn.corrected_fr.strip() or said
     created = 0
     now = datetime.now(UTC)
     async with session_factory() as session:
         cap_left = repo.ERROR_CARDS_DAILY_CAP - await repo.count_error_cards_created_since(
-            session, since=day_start_utc(now, settings.tz)
+            session, user_id=user.id, since=day_start_utc(now, settings.tz)
         )
         for error in turn.errors:
             if cap_left <= 0:
@@ -144,6 +155,7 @@ async def _create_error_cards(
             card = await repo.create_error_card(
                 session,
                 srs,
+                user_id=user.id,
                 kind=CardKind.error.value,
                 sentence=sentence,
                 original=error.original,
@@ -188,10 +200,12 @@ def _turn_reply(turn: TalkTurn, created: int, *, from_voice: bool) -> str:
 async def _turn(
     message: Message,
     state: FSMContext,
+    user: User,
     session_factory: SessionFactory,
     llm: LLMClient,
     srs: SrsScheduler,
     settings: Settings,
+    usage: UsageLimiter,
     *,
     text: str | None = None,
     audio: tuple[bytes, str] | None = None,
@@ -199,9 +213,16 @@ async def _turn(
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     data = await state.get_data()
     history: list[str] = data.get("history", [])
+    if not usage.check_and_count(user.id):
+        await message.answer(OVER_LIMIT_TEXT)
+        return
     try:
         turn = await llm.talk_turn(
-            "\n".join(history), model=settings.model_smart, text=text, audio=audio
+            "\n".join(history),
+            model=settings.model_smart,
+            level=user.level,
+            text=text,
+            audio=audio,
         )
     except LLMError:
         logger.exception("talk turn failed")
@@ -211,7 +232,7 @@ async def _turn(
     said = (text or turn.transcript).strip()
     created = 0
     if turn.errors and said:
-        created = await _create_error_cards(session_factory, srs, settings, turn, said)
+        created = await _create_error_cards(session_factory, srs, settings, turn, said, user)
 
     history.extend([f"Élève: {said}", f"Tuteur: {turn.reply_fr}"])
     await state.update_data(history=history[-HISTORY_MAX:])
