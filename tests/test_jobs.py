@@ -19,6 +19,7 @@ from frbot.jobs.reminders import (
     backup_database,
     cleanup_stray_fsm_entries,
     create_scheduler,
+    drain_deliveries,
     minute_tick,
     send_due_reminder,
     send_weekly_summary,
@@ -94,6 +95,7 @@ async def test_tick_delivers_only_at_the_users_own_time(fake_bot, session_factor
     await add_user(session_factory, 222, reminder_time=local_hh_mm(settings, 30))
 
     await minute_tick(fake_bot, fake_dispatcher(), session_factory, settings)
+    await drain_deliveries()
 
     sent = fake_bot.session.sent_messages
     assert len(sent) == 1
@@ -105,7 +107,9 @@ async def test_tick_does_not_send_twice_in_one_day(fake_bot, session_factory, se
     await add_user(session_factory, ALLOWED_USER_ID, reminder_time=local_hh_mm(settings))
 
     await minute_tick(fake_bot, fake_dispatcher(), session_factory, settings)
+    await drain_deliveries()
     await minute_tick(fake_bot, fake_dispatcher(), session_factory, settings)
+    await drain_deliveries()
 
     assert len(fake_bot.session.sent_messages) == 1
 
@@ -116,6 +120,7 @@ async def test_tick_sends_writing_prompt_at_writing_time(fake_bot, session_facto
         session_factory, ALLOWED_USER_ID, reminder_time="03:03", writing_time=local_hh_mm(settings)
     )
     await minute_tick(fake_bot, fake_dispatcher(), session_factory, settings)
+    await drain_deliveries()
     assert any("Задание" in (m.text or "") for m in fake_bot.session.sent_messages)
 
 
@@ -132,6 +137,7 @@ async def test_tick_skips_inactive_users(fake_bot, session_factory, settings):
         )
         await session.commit()
     await minute_tick(fake_bot, fake_dispatcher(), session_factory, settings)
+    await drain_deliveries()
     assert fake_bot.session.sent_messages == []
 
 
@@ -153,6 +159,7 @@ async def test_tick_survives_a_failing_user(fake_bot, session_factory, settings)
 
     fake_bot.session._result_for = flaky
     await minute_tick(fake_bot, fake_dispatcher(), session_factory, settings)
+    await drain_deliveries()
     # The second user still got their reminder.
     assert len(fake_bot.session.sent_messages) == 2
 

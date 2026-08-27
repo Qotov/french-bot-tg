@@ -11,7 +11,8 @@ import logging
 import secrets
 from collections import Counter
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -297,13 +298,21 @@ async def last_activity_at(session: AsyncSession, *, user_id: int) -> datetime |
 
 
 async def count_active_days(
-    session: AsyncSession, *, user_id: int, since: datetime
+    session: AsyncSession, *, user_id: int, since: datetime, tz: str = "UTC"
 ) -> int:
-    """Distinct days with at least one review — the retention metric."""
-    day = func.date(Review.reviewed_at)
-    stmt = (
-        select(func.count(func.distinct(day)))
-        .where(Review.user_id == user_id, Review.reviewed_at >= since)
+    """Distinct local days with at least one review — the pilot's headline
+    retention metric, so it must count the learner's days, not UTC's.
+
+    reviewed_at is stored naive-UTC, so the day bucket is taken after shifting
+    by the zone's current offset. (A fixed offset is close enough here: a
+    review would have to land inside the one-hour DST window to shift bucket,
+    and the metric is a count of days, not a billing figure.)
+    """
+    offset = datetime.now(ZoneInfo(tz)).utcoffset() or timedelta(0)
+    hours = offset.total_seconds() / 3600
+    day = func.date(Review.reviewed_at, f"{hours:+g} hours")
+    stmt = select(func.count(func.distinct(day))).where(
+        Review.user_id == user_id, Review.reviewed_at >= since
     )
     return (await session.execute(stmt)).scalar_one()
 
@@ -520,6 +529,7 @@ async def gather_stats(
     due_until: datetime,
     week_ago: datetime,
     month_ago: datetime,
+    tz: str = "UTC",
 ) -> Stats:
     due_today = await count_due(session, user_id=user_id, until=due_until)
 
@@ -566,7 +576,9 @@ async def gather_stats(
         new_cards_7d=new_cards_7d,
         top_error_types_30d=counts.most_common(5),
         total_cards=await count_cards(session, user_id=user_id),
-        active_days_7d=await count_active_days(session, user_id=user_id, since=week_ago),
+        active_days_7d=await count_active_days(
+            session, user_id=user_id, since=week_ago, tz=tz
+        ),
     )
 
 

@@ -56,12 +56,50 @@ def upgrade() -> None:
     if owner and owner.strip().lstrip("-").isdigit():
         owner_id = int(owner)
         op.execute(sa.text(f"UPDATE cards SET user_id = {owner_id}"))
-        op.execute(
-            sa.text(
-                f"UPDATE reviews SET user_id = {owner_id}"
-            )
-        )
+        op.execute(sa.text(f"UPDATE reviews SET user_id = {owner_id}"))
         op.execute(sa.text(f"UPDATE writings SET user_id = {owner_id}"))
+
+        # Settings used to live in the global app_settings table; they are now
+        # per-user columns. Carry the owner's choices over, creating their row
+        # if this database predates the users table, so an upgrade never
+        # silently resets someone's reminder times back to the .env defaults.
+        conn = op.get_bind()
+        overrides = dict(
+            conn.execute(
+                sa.text(
+                    "SELECT key, value FROM app_settings WHERE key IN "
+                    "('REMINDER_TIME','WRITING_TIME','DAILY_NEW_LIMIT','SESSION_MAX')"
+                )
+            ).fetchall()
+        )
+        if overrides:
+            chat_id = conn.execute(
+                sa.text("SELECT value FROM app_settings WHERE key = 'chat_id'")
+            ).scalar()
+            conn.execute(
+                sa.text(
+                    "INSERT INTO users (id, chat_id, level, is_admin, active, created_at) "
+                    "VALUES (:id, :chat_id, 'B1', 1, 1, CURRENT_TIMESTAMP)"
+                ),
+                {"id": owner_id, "chat_id": int(chat_id) if chat_id else owner_id},
+            )
+            for column, key in (
+                ("reminder_time", "REMINDER_TIME"),
+                ("writing_time", "WRITING_TIME"),
+                ("daily_new_limit", "DAILY_NEW_LIMIT"),
+                ("session_max", "SESSION_MAX"),
+            ):
+                if key in overrides:
+                    value = overrides[key]
+                    if column in ("daily_new_limit", "session_max"):
+                        try:
+                            value = int(value)
+                        except (TypeError, ValueError):
+                            continue
+                    conn.execute(
+                        sa.text(f"UPDATE users SET {column} = :v WHERE id = :id"),
+                        {"v": value, "id": owner_id},
+                    )
 
 
 def downgrade() -> None:

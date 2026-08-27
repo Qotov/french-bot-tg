@@ -87,7 +87,10 @@ async def cmd_start(
     if user is not None:
         async with session_factory() as session:
             row = await repo.get_user(session, user.id)
-            if row is not None and row.chat_id != message.chat.id:
+            # Only ever deliver to the private chat (the middleware already
+            # rejects other chat types; this is the second belt).
+            private = message.chat.type == "private"
+            if row is not None and private and row.chat_id != message.chat.id:
                 row.chat_id = message.chat.id
                 await session.commit()
         await message.answer(HELP_TEXT)
@@ -149,12 +152,18 @@ async def on_level_chosen(
     await safe_answer(query)
 
 
-class FeedbackStates:
-    """Feedback uses a plain flag in FSM data rather than its own state group,
-    so it can be started from anywhere without clobbering an active session."""
+BUSY_TEXT = (
+    "Сейчас идёт другая сессия. Заверши её или набери /stop, потом /feedback."
+)
 
 
 async def cmd_feedback(message: Message, state: FSMContext) -> None:
+    # Feedback is a flag rather than its own state so it survives anywhere —
+    # but it must not be armed while another flow is waiting for a message,
+    # or it would swallow that flow's answer.
+    if await state.get_state() is not None:
+        await message.answer(BUSY_TEXT)
+        return
     await state.update_data(awaiting_feedback=True)
     await message.answer(FEEDBACK_ASK)
 
@@ -195,6 +204,10 @@ def create_feedback_router() -> Router:
     router = Router(name="feedback")
 
     async def _flagged(message: Message, state: FSMContext) -> bool:
+        # Only when no other flow owns the conversation (belt and braces with
+        # the check in cmd_feedback).
+        if await state.get_state() is not None:
+            return False
         return bool((await state.get_data()).get("awaiting_feedback"))
 
     router.message.register(handle_feedback, _flagged, F.text, ~F.text.startswith("/"))

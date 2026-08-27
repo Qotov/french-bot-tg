@@ -70,7 +70,9 @@ async def cmd_users(
         rows = []
         active_7d = 0
         for u in users:
-            days = await repo.count_active_days(session, user_id=u.id, since=week_ago)
+            days = await repo.count_active_days(
+                session, user_id=u.id, since=week_ago, tz=settings.tz
+            )
             cards = await repo.count_cards(session, user_id=u.id)
             last = await repo.last_activity_at(session, user_id=u.id)
             if days:

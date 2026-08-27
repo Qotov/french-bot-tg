@@ -47,6 +47,15 @@ BACKUP_KEEP = 14
 BACKUP_TIME = "03:00"
 CLEANUP_TIME = "04:00"
 SEND_RATE = 20  # messages/second, under Telegram's ~30/s cap
+LOCK_WAIT_SECONDS = 20  # give up rather than stall the tick on a busy user
+DELIVERY_TIMEOUT = 60  # a single delivery may never outlive its minute
+
+# Deliveries run detached from the tick, so one slow user cannot delay anyone
+# else. Keep strong references or the event loop may garbage-collect them.
+_in_flight: set[asyncio.Task] = set()
+
+# The local wall-clock minute the previous tick saw, to detect a DST jump.
+_last_local: datetime | None = None
 
 # (user_id, kind, local date) pairs already delivered — prevents a double send
 # if a tick runs twice for the same minute after a restart.
@@ -77,6 +86,32 @@ def _mark_sent(user_id: int, kind: str, today: date) -> bool:
     return True
 
 
+async def drain_deliveries(wait_seconds: float = DELIVERY_TIMEOUT + 5) -> None:
+    """Wait for detached deliveries to finish (shutdown, and tests)."""
+    while _in_flight:
+        pending = set(_in_flight)
+        done, _ = await asyncio.wait(pending, timeout=wait_seconds)
+        if not done:
+            return
+
+
+def _minutes_skipped(previous: datetime | None, current: datetime) -> set[str]:
+    """Wall-clock minutes between two ticks that never happened (DST jump)."""
+    if previous is None:
+        return set()
+    gap = (current - previous).total_seconds()
+    # A normal tick is ~60s; a spring-forward jump is an hour or so. Anything
+    # longer than that is a restart/outage, not a DST change.
+    if gap <= 90 or gap > 3 * 3600:
+        return set()
+    missed = set()
+    cursor = previous + timedelta(minutes=1)
+    while cursor < current and len(missed) < 180:
+        missed.add(cursor.strftime("%H:%M"))
+        cursor += timedelta(minutes=1)
+    return missed
+
+
 async def send_due_reminder(bot: Bot, user: User, session_factory: SessionFactory) -> None:
     now = datetime.now(UTC)
     async with session_factory() as session:
@@ -99,16 +134,23 @@ async def send_writing_prompt(
     session_factory: SessionFactory,
     settings: Settings,
 ) -> None:
+    """Send the daily writing prompt. Raises TimeoutError if the user is busy
+    with a long-running update — the caller treats that as "skip today"."""
     chat_id = user.chat_id or user.id
-    key = StorageKey(bot_id=bot.id, chat_id=chat_id, user_id=user.id)
+    # aiogram resolves incoming updates with FSMStrategy.USER_IN_CHAT, i.e. the
+    # chat the message arrives in — always the user's private chat. Keying on
+    # user.id keeps the job's state on that same key even if chat_id drifts.
+    key = StorageKey(bot_id=bot.id, chat_id=user.id, user_id=user.id)
     state = FSMContext(storage=dispatcher.storage, key=key)
 
     # Serialize with the user's handlers (same per-user isolation lock the
-    # dispatcher uses), so the state check and start_writing are atomic.
+    # dispatcher uses), so the state check and start_writing are atomic. The
+    # lock is held for the whole of any update the user is currently in —
+    # including a slow LLM call — so never wait on it indefinitely.
     isolation = getattr(getattr(dispatcher, "fsm", None), "events_isolation", None)
     lock = isolation.lock(key) if isolation is not None else nullcontext()
 
-    async with lock:
+    async with asyncio.timeout(LOCK_WAIT_SECONDS), lock:
         current = await state.get_state()
         if current is not None:
             # Don't stomp an in-progress review/drill/settings/write session.
@@ -131,24 +173,62 @@ async def minute_tick(
     settings: Settings,
 ) -> None:
     """Deliver each user's reminder and writing prompt at their own time."""
+    global _last_local
     local = datetime.now(ZoneInfo(settings.tz))
     hh_mm = local.strftime("%H:%M")
     today = local.date()
+    # On the spring-forward night a whole hour of wall-clock time never occurs,
+    # so an exact HH:MM match would silently skip everyone scheduled inside it.
+    # Treat every minute the clock jumped over as also due now.
+    skipped = _minutes_skipped(_last_local, local)
+    _last_local = local
 
     async with session_factory() as session:
         users = await repo.list_active_users(session)
         plan = [(u, repo.config_for_user(u, settings)) for u in users]
 
+    matches = {hh_mm, *skipped}
+    due: list[tuple[User, str]] = []
     for user, cfg in plan:
-        try:
-            if cfg.reminder_time == hh_mm and _mark_sent(user.id, "reminder", today):
+        if cfg.reminder_time in matches and _mark_sent(user.id, "reminder", today):
+            due.append((user, "reminder"))
+        if cfg.writing_time in matches and _mark_sent(user.id, "writing", today):
+            due.append((user, "writing"))
+    if not due:
+        return
+
+    logger.info("tick %s: %d deliveries", hh_mm, len(due))
+    for index, (user, kind) in enumerate(due):
+        task = asyncio.create_task(
+            _deliver(bot, dispatcher, user, kind, session_factory, settings, index)
+        )
+        _in_flight.add(task)
+        task.add_done_callback(_in_flight.discard)
+
+
+async def _deliver(
+    bot: Bot,
+    dispatcher: HasStorage,
+    user: User,
+    kind: str,
+    session_factory: SessionFactory,
+    settings: Settings,
+    index: int,
+) -> None:
+    """One user's scheduled message, fully isolated from every other user's."""
+    # Stagger sends to stay under Telegram's rate limit without serializing the
+    # tick itself.
+    await asyncio.sleep(index / SEND_RATE)
+    try:
+        async with asyncio.timeout(DELIVERY_TIMEOUT):
+            if kind == "reminder":
                 await send_due_reminder(bot, user, session_factory)
-                await asyncio.sleep(1 / SEND_RATE)
-            if cfg.writing_time == hh_mm and _mark_sent(user.id, "writing", today):
+            else:
                 await send_writing_prompt(bot, dispatcher, user, session_factory, settings)
-                await asyncio.sleep(1 / SEND_RATE)
-        except Exception:
-            logger.exception("scheduled delivery to user %d failed", user.id)
+    except TimeoutError:
+        logger.warning("%s for user %d timed out (busy or slow); skipped today", kind, user.id)
+    except Exception:
+        logger.exception("%s delivery to user %d failed", kind, user.id)
 
 
 async def cleanup_stray_fsm_entries(
@@ -204,6 +284,7 @@ async def send_weekly_summary(
                     due_until=day_end_utc(now, settings.tz),
                     week_ago=now - timedelta(days=7),
                     month_ago=now - timedelta(days=30),
+                    tz=settings.tz,
                 )
             chat_id = user.chat_id or user.id
             await bot.send_message(chat_id, render.weekly_summary(stats))

@@ -87,16 +87,19 @@ async def start_writing(
         await session.commit()
         writing_id = writing.id
 
-    await state.set_state(WriteStates.awaiting_answer)
-    await state.set_data({"writing_id": writing_id, "prompt": prompt})
-    logger.info("writing prompt %d sent: %s", writing_id, situation)
-
     lines = [f"✍️ <b>Задание:</b> {render.esc(situation)}"]
     if words:
         pretty = ", ".join(f"<b>{render.esc(w)}</b>" for w in words)
         lines.append(f"Используй слова: {pretty}")
     lines.append("Напиши 2–3 предложения по-французски.")
+
+    # Send BEFORE arming the state: if the send fails (blocked bot, network),
+    # the user must not be left waiting to answer a prompt they never saw.
     await answer("\n".join(lines))
+
+    await state.set_state(WriteStates.awaiting_answer)
+    await state.set_data({"writing_id": writing_id, "prompt": prompt})
+    logger.info("writing prompt %d sent: %s", writing_id, situation)
 
 
 async def cmd_write(

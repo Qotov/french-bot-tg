@@ -45,6 +45,26 @@ def _is_start_command(event: TelegramObject) -> bool:
     return text.startswith("/start")
 
 
+def _is_private(event: TelegramObject) -> bool:
+    """Everything the bot does is one-to-one tutoring.
+
+    A participant's deliveries are addressed to a stored chat id, so allowing a
+    flow to be driven from a group would let one /start there redirect that
+    person's cards, prompts and stats into a room other people can read.
+    """
+    if isinstance(event, Update):
+        message = event.message or event.edited_message
+        if message is not None:
+            return message.chat.type == "private"
+        query = event.callback_query
+        if query is not None and query.message is not None:
+            return query.message.chat.type == "private"
+        # Inline queries and chat-member updates carry no chat to act on.
+        return event.callback_query is None
+    chat = getattr(event, "chat", None)
+    return chat is None or chat.type == "private"
+
+
 class AuthMiddleware(BaseMiddleware):
     """Resolves the sender to a pilot participant.
 
@@ -64,6 +84,9 @@ class AuthMiddleware(BaseMiddleware):
     ) -> Any:
         tg_user: TgUser | None = data.get("event_from_user") or _extract_user(event)
         if tg_user is None or tg_user.is_bot:
+            return None
+        if not _is_private(event):
+            logger.info("ignored non-private update from user %s", tg_user.id)
             return None
 
         async with self.session_factory() as session:

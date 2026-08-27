@@ -28,6 +28,7 @@ async def cmd_stats(
             due_until=day_end_utc(now, settings.tz),
             week_ago=now - timedelta(days=7),
             month_ago=now - timedelta(days=30),
+            tz=settings.tz,
         )
     await message.answer(render.stats_message(stats))
 
